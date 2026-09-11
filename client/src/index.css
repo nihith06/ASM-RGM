@@ -1,0 +1,61 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-slate-50 text-slate-900 antialiased font-sans min-h-screen selection:bg-navy-900 selection:text-white;
+  }
+}
+
+/* Custom scrollbar for dense schedule tables */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #f1f5f9;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+@media print {
+  body {
+    background: white;
+  }
+  .no-print {
+    display: none !important;
+  }
+}
+
+/* Custom Photo Backgrounds: Pre-Login (Blue Glass Building) & Post-Login (Green Campus) */
+.bg-prelogin-blue {
+  background-image: url('/bg_prelogin_blue.jpg');
+  background-size: cover;
+  background-position: center center;
+  background-repeat: no-repeat;
+  background-attachment: fixed;
+}
+
+.bg-postlogin-green {
+  background-image: url('/bg_postlogin_green.png');
+  background-size: cover;
+  background-position: center center;
+  background-repeat: no-repeat;
+  background-attachment: fixed;
+}
+
+@supports (-webkit-touch-callout: none) {
+  .bg-prelogin-blue,
+  .bg-postlogin-green {
+    background-attachment: scroll;
+  }
+}

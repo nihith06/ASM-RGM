@@ -378,11 +378,11 @@ export default function FacultyDashboard({ user }) {
               <table className="w-full text-left border-collapse min-w-[900px]">
                 <thead>
                   <tr className="bg-slate-100/90 border-b border-slate-200 text-[11px] font-bold text-navy-900 uppercase tracking-wider">
-                    <th className="py-3 px-4 w-32 border-r border-slate-200 text-center">Day</th>
+                    <th className="py-3 px-4 w-36 border-r border-slate-200 text-center">Day / Hour & Timing</th>
                     {[1, 2, 3, 4, 5, 6, 7].map(p => (
                       <th key={p} className="py-3 px-2 text-center border-r border-slate-200">
                         <div className="flex items-center justify-center gap-1">
-                          <span>Period {p}</span>
+                          <span>Hour {p}</span>
                           {p === 7 && (
                             <span className="text-[8px] bg-amber-400 text-navy-950 font-black px-1 rounded">to 5 PM</span>
                           )}

@@ -115,7 +115,16 @@ export default function TimetableGrid({ user, initialYear = 3, hideControls = fa
   const loadFacultyList = async () => {
     try {
       const res = await directoryApi.getFaculty();
-      if (res.faculty) setFacultySuggestions(res.faculty);
+      if (res.faculty) {
+        // Exclude HOD (Dr. G. Kishor Kumar) from faculty suggestions for subject assignment
+        const teachingFaculty = res.faculty.filter(f => {
+          const name = (f.name || '').toLowerCase();
+          const reg = (f.register_id || '').toLowerCase();
+          if (name.includes('bala kishore') || reg.includes('fac016')) return true;
+          return !name.includes('kishor kumar') && !name.includes('dr. g. kishor') && reg !== 'fac001' && (!name.includes('kishor') || name.includes('bala'));
+        });
+        setFacultySuggestions(teachingFaculty);
+      }
     } catch (e) {
       // ignore
     }
@@ -222,6 +231,20 @@ export default function TimetableGrid({ user, initialYear = 3, hideControls = fa
       const isYear2NonAiml = selectedYear === 2 && !isYear2AimlSubject(editingCell.subject);
       const effectiveFaculty = (isSem || isYear1NonAiml || isYear2NonAiml) ? '—' : (editingCell.faculty_name || '—');
 
+      const isHod = (name) => {
+        if (!name) return false;
+        const s = name.toLowerCase().trim();
+        if (s.includes('bala kishore') || s.includes('fac016')) return false;
+        return s.includes('kishor kumar') || s.includes('dr. g. kishor') || s === 'fac001' || (s.includes('kishor') && !s.includes('bala'));
+      };
+
+      if (effectiveFaculty !== '—' && isHod(effectiveFaculty)) {
+        setError('This faculty member cannot be assigned any teaching subjects.');
+        return;
+      }
+
+      const effectiveRoom = (editingCell.room || '').trim();
+
       await timetableApi.updateCell({
         year: selectedYear,
         section_id: selectedSectionId,
@@ -230,7 +253,7 @@ export default function TimetableGrid({ user, initialYear = 3, hideControls = fa
         periods: periodsToUpdate,
         subject: editingCell.subject,
         faculty_name: effectiveFaculty,
-        room: ''
+        room: effectiveRoom
       });
 
       // Update local state instantly
@@ -240,7 +263,7 @@ export default function TimetableGrid({ user, initialYear = 3, hideControls = fa
           dayCopy[p] = {
             subject: editingCell.subject || '—',
             faculty_name: effectiveFaculty,
-            room: ''
+            room: effectiveRoom
           };
         }
         return {
@@ -252,8 +275,8 @@ export default function TimetableGrid({ user, initialYear = 3, hideControls = fa
       setEditingCell(null);
       setSuccess(
         periodsToUpdate.length > 1
-          ? `Updated ${editingCell.day} Periods ${periodsToUpdate.join(', ')}!`
-          : `Updated ${editingCell.day} Period ${editingCell.period}!`
+          ? `Updated ${editingCell.day} Hours ${periodsToUpdate.join(', ')}!`
+          : `Updated ${editingCell.day} Hour ${editingCell.period}!`
       );
       setTimeout(() => setSuccess(''), 3000);
     } catch (err) {
@@ -631,17 +654,17 @@ export default function TimetableGrid({ user, initialYear = 3, hideControls = fa
               {selectedYear === 1 ? (
                 /* Year 1 Table Header: 7 Periods of 50 minutes each (classes until 5:00 PM) */
                 <tr className="bg-slate-100/90 border-b border-slate-200 text-[11px] font-bold text-navy-900 uppercase tracking-wider">
-                  <th className="py-3.5 px-4 w-32 border-r border-slate-200 text-center">Day / Timing</th>
+                  <th className="py-3.5 px-4 w-32 border-r border-slate-200 text-center">Day / Hour & Timing</th>
                   
-                  {/* Period 1 */}
+                  {/* Hour 1 */}
                   <th className="py-3 px-3 text-center border-r border-slate-200">
-                    <div>Period 1</div>
+                    <div>Hour 1</div>
                     <div className="text-[10px] font-semibold text-slate-600 normal-case">{YEAR_1_PERIOD_TIMES[1]}</div>
                   </th>
 
-                  {/* Period 2 */}
+                  {/* Hour 2 */}
                   <th className="py-3 px-3 text-center border-r border-slate-200">
-                    <div>Period 2</div>
+                    <div>Hour 2</div>
                     <div className="text-[10px] font-semibold text-slate-600 normal-case">{YEAR_1_PERIOD_TIMES[2]}</div>
                   </th>
 
@@ -651,9 +674,9 @@ export default function TimetableGrid({ user, initialYear = 3, hideControls = fa
                     <div className="text-[8px] font-semibold text-amber-700 normal-case">10:40-11:00</div>
                   </th>
 
-                  {/* Period 3 */}
+                  {/* Hour 3 */}
                   <th className="py-3 px-3 text-center border-r border-slate-200">
-                    <div>Period 3</div>
+                    <div>Hour 3</div>
                     <div className="text-[10px] font-semibold text-slate-600 normal-case">{YEAR_1_PERIOD_TIMES[3]}</div>
                   </th>
 
@@ -663,15 +686,15 @@ export default function TimetableGrid({ user, initialYear = 3, hideControls = fa
                     <div className="text-[8px] font-semibold text-amber-800 normal-case">11:50-1:00</div>
                   </th>
 
-                  {/* Period 4 */}
+                  {/* Hour 4 */}
                   <th className="py-3 px-3 text-center border-r border-slate-200">
-                    <div>Period 4</div>
+                    <div>Hour 4</div>
                     <div className="text-[10px] font-semibold text-slate-600 normal-case">{YEAR_1_PERIOD_TIMES[4]}</div>
                   </th>
 
-                  {/* Period 5 */}
+                  {/* Hour 5 */}
                   <th className="py-3 px-3 text-center border-r border-slate-200">
-                    <div>Period 5</div>
+                    <div>Hour 5</div>
                     <div className="text-[10px] font-semibold text-slate-600 normal-case">{YEAR_1_PERIOD_TIMES[5]}</div>
                   </th>
 
@@ -681,30 +704,30 @@ export default function TimetableGrid({ user, initialYear = 3, hideControls = fa
                     <div className="text-[8px] font-semibold text-amber-700 normal-case">2:40-3:00</div>
                   </th>
 
-                  {/* Period 6 */}
+                  {/* Hour 6 */}
                   <th className="py-3 px-3 text-center border-r border-slate-200">
-                    <div>Period 6</div>
+                    <div>Hour 6</div>
                     <div className="text-[10px] font-semibold text-slate-600 normal-case">{YEAR_1_PERIOD_TIMES[6]}</div>
                   </th>
 
-                  {/* Period 7 */}
+                  {/* Hour 7 */}
                   <th className="py-3 px-3 text-center">
-                    <div>Period 7</div>
+                    <div>Hour 7</div>
                     <div className="text-[10px] font-semibold text-slate-600 normal-case">{YEAR_1_PERIOD_TIMES[7]}</div>
                   </th>
                 </tr>
               ) : (
                 /* Years 2, 3, 4 Table Header: Classes until 4:20 PM */
                 <tr className="bg-slate-100/90 border-b border-slate-200 text-[11px] font-bold text-navy-900 uppercase tracking-wider">
-                  <th className="py-3.5 px-4 w-28 border-r border-slate-200 text-center">Day / Timing</th>
+                  <th className="py-3.5 px-4 w-28 border-r border-slate-200 text-center">Day / Hour & Timing</th>
                   
-                  {/* Periods 1 & 2 */}
+                  {/* Hours 1 & 2 */}
                   <th className="py-3 px-3 text-center border-r border-slate-200">
-                    <div>Period 1</div>
+                    <div>Hour 1</div>
                     <div className="text-[10px] font-semibold text-slate-600 normal-case">{SENIOR_YEAR_PERIOD_TIMES[1]}</div>
                   </th>
                   <th className="py-3 px-3 text-center border-r border-slate-200">
-                    <div>Period 2</div>
+                    <div>Hour 2</div>
                     <div className="text-[10px] font-semibold text-slate-600 normal-case">{SENIOR_YEAR_PERIOD_TIMES[2]}</div>
                   </th>
 
@@ -714,13 +737,13 @@ export default function TimetableGrid({ user, initialYear = 3, hideControls = fa
                     <div className="text-[8px] font-semibold text-amber-700 normal-case">10:40-11:00</div>
                   </th>
 
-                  {/* Periods 3 & 4 */}
+                  {/* Hours 3 & 4 */}
                   <th className="py-3 px-3 text-center border-r border-slate-200">
-                    <div>Period 3</div>
+                    <div>Hour 3</div>
                     <div className="text-[10px] font-semibold text-slate-600 normal-case">{SENIOR_YEAR_PERIOD_TIMES[3]}</div>
                   </th>
                   <th className="py-3 px-3 text-center border-r border-slate-200">
-                    <div>Period 4</div>
+                    <div>Hour 4</div>
                     <div className="text-[10px] font-semibold text-slate-600 normal-case">{SENIOR_YEAR_PERIOD_TIMES[4]}</div>
                   </th>
 
@@ -730,17 +753,17 @@ export default function TimetableGrid({ user, initialYear = 3, hideControls = fa
                     <div className="text-[8px] font-semibold text-amber-800 normal-case">12:40-1:50</div>
                   </th>
 
-                  {/* Periods 5, 6, 7 */}
+                  {/* Hours 5, 6, 7 */}
                   <th className="py-3 px-3 text-center border-r border-slate-200">
-                    <div>Period 5</div>
+                    <div>Hour 5</div>
                     <div className="text-[10px] font-semibold text-slate-600 normal-case">{SENIOR_YEAR_PERIOD_TIMES[5]}</div>
                   </th>
                   <th className="py-3 px-3 text-center border-r border-slate-200">
-                    <div>Period 6</div>
+                    <div>Hour 6</div>
                     <div className="text-[10px] font-semibold text-slate-600 normal-case">{SENIOR_YEAR_PERIOD_TIMES[6]}</div>
                   </th>
                   <th className="py-3 px-3 text-center">
-                    <div>Period 7</div>
+                    <div>Hour 7</div>
                     <div className="text-[10px] font-semibold text-slate-600 normal-case">{SENIOR_YEAR_PERIOD_TIMES[7]}</div>
                   </th>
                 </tr>
@@ -849,13 +872,13 @@ export default function TimetableGrid({ user, initialYear = 3, hideControls = fa
               <div>
                 <h3 className="text-base font-bold text-navy-900">
                   {editingCell.periods && editingCell.periods.length > 1
-                    ? `Edit Merged Slot (${editingCell.periods.length} Consecutive Periods)`
+                    ? `Edit Merged Slot (${editingCell.periods.length} Consecutive Hours)`
                     : 'Edit Timetable Slot'}
                 </h3>
                 <p className="text-xs text-slate-500">
                   {editingCell.day} · {editingCell.periods && editingCell.periods.length > 1
-                    ? `Periods ${editingCell.periods.join(', ')} (${getPeriodTime(selectedYear, editingCell.periods[0]).split(' - ')[0]} - ${(getPeriodTime(selectedYear, editingCell.periods[editingCell.periods.length - 1]).split(' - ')[1] || '')})`
-                    : `Period ${editingCell.period} (${getPeriodTime(selectedYear, editingCell.period)})`}
+                    ? `Hours ${editingCell.periods.join(', ')} (${getPeriodTime(selectedYear, editingCell.periods[0]).split(' - ')[0]} - ${(getPeriodTime(selectedYear, editingCell.periods[editingCell.periods.length - 1]).split(' - ')[1] || '')})`
+                    : `Hour ${editingCell.period} (${getPeriodTime(selectedYear, editingCell.period)})`}
                 </p>
               </div>
               <button 
@@ -922,7 +945,7 @@ export default function TimetableGrid({ user, initialYear = 3, hideControls = fa
                       ? 'No faculty assigned (SEM Period)' 
                       : ((selectedYear === 1 && !isYear1AimlSubject(editingCell.subject)) || (selectedYear === 2 && !isYear2AimlSubject(editingCell.subject))
                         ? 'Unassigned / Handled by other faculty'
-                        : 'e.g. Dr. G. Kishor Kumar, Dr. J. Avinash')
+                        : 'e.g. Dr. Chakrapani, Dr. J. Avinash')
                   }
                   value={
                     editingCell.subject?.trim().toUpperCase() === 'SEM' || (selectedYear === 1 && !isYear1AimlSubject(editingCell.subject)) || (selectedYear === 2 && !isYear2AimlSubject(editingCell.subject))
@@ -939,6 +962,22 @@ export default function TimetableGrid({ user, initialYear = 3, hideControls = fa
                     </option>
                   ))}
                 </datalist>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  Room Number / Hall
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. ET-3080, ET-3050, RG-207, AI&SP LAB"
+                  value={editingCell.room || ''}
+                  onChange={(e) => setEditingCell({ ...editingCell, room: e.target.value })}
+                  className="w-full px-3 py-2 text-sm rounded-xl border border-slate-200 focus:outline-hidden focus:border-navy-900"
+                />
+                <p className="text-[11px] text-slate-400 mt-1">
+                  Leave blank or set &lsquo;—&rsquo; for default / placeholder
+                </p>
               </div>
 
               <div className="flex items-center justify-end gap-2 pt-3">
@@ -1242,7 +1281,7 @@ export default function TimetableGrid({ user, initialYear = 3, hideControls = fa
   );
 }
 
-// Subcomponent for rendering individual cell with elegant card look and merged period badge (strictly no room codes)
+// Subcomponent for rendering individual cell with elegant card look and room number header (matching reference Image 2)
 function CellContent({ cell, span = 1, periods = [], year = 3, isStudent = false }) {
   if (!cell || !cell.subject || cell.subject === '—') {
     return (
@@ -1255,15 +1294,21 @@ function CellContent({ cell, span = 1, periods = [], year = 3, isStudent = false
   const isSem = cell.subject?.trim().toUpperCase() === 'SEM';
   const isLab = cell.subject.toLowerCase().includes('lab');
   const isOnLeave = !isStudent && Boolean(cell.is_on_leave);
+  const roomDisplay = (cell.room && cell.room.trim() && cell.room.trim() !== '—') ? cell.room.trim() : '—';
 
   return (
-    <div className={`min-h-[5rem] h-full flex flex-col justify-between p-2.5 rounded-xl border transition-all ${
+    <div className={`min-h-[5.5rem] h-full flex flex-col justify-between p-2 rounded-xl border transition-all ${
       isOnLeave
         ? 'bg-rose-50/90 border-rose-300 text-rose-950 shadow-2xs'
         : isLab 
         ? 'bg-indigo-50/60 border-indigo-200/90 text-indigo-950 shadow-2xs' 
         : 'bg-slate-50/80 border-slate-200/90 text-slate-900 shadow-2xs'
     }`}>
+      {/* Room Number section immediately at top of card, replicating Image 2 reference */}
+      <div className="bg-slate-200/90 text-slate-800 text-[10px] sm:text-[10.5px] font-black py-0.5 px-2 rounded-md border border-slate-300/80 text-center tracking-wide uppercase mb-1.5 shadow-2xs">
+        {roomDisplay}
+      </div>
+
       <div className="flex items-start justify-between gap-1">
         <div className="font-bold text-xs sm:text-[13px] leading-tight line-clamp-2 text-navy-950">
           {cell.subject}

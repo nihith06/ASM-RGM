@@ -8,12 +8,11 @@ import {
   Clock, 
   CheckCircle2, 
   Sparkles,
-  KeyRound,
   FileSpreadsheet,
   Users
 } from 'lucide-react';
 
-export default function LandingPage({ onSelectRole, onQuickDemoLogin }) {
+export default function LandingPage({ onSelectRole }) {
   return (
     <div className="min-h-[calc(100vh-80px)] flex flex-col justify-between">
       {/* Hero Section */}
@@ -34,8 +33,11 @@ export default function LandingPage({ onSelectRole, onQuickDemoLogin }) {
         <p className="text-lg sm:text-xl font-bold text-slate-800 max-w-3xl mx-auto mb-3">
           Rajeev Gandhi Memorial College of Engineering and Technology (Autonomous)
         </p>
-        <p className="text-sm sm:text-base font-semibold text-navy-800 tracking-wide uppercase max-w-2xl mx-auto mb-6">
+        <p className="text-sm sm:text-base font-semibold text-navy-800 tracking-wide uppercase max-w-2xl mx-auto mb-2">
           Department of Artificial Intelligence & Machine Learning (AIML)
+        </p>
+        <p className="text-sm sm:text-base font-bold text-navy-950 max-w-2xl mx-auto mb-6">
+          HOD - Dr. G. Kishor Kumar
         </p>
 
         {/* Choose your role section */}
@@ -138,40 +140,7 @@ export default function LandingPage({ onSelectRole, onQuickDemoLogin }) {
           </div>
         </div>
 
-        {/* 1-Click Quick Demo Access Bar */}
-        <div className="mt-14 max-w-3xl mx-auto bg-navy-900 text-white rounded-2xl p-5 shadow-md border border-navy-800">
-          <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
-            <div className="text-left">
-              <div className="flex items-center gap-2 text-xs font-bold text-amber-300 uppercase tracking-wider">
-                <KeyRound className="w-3.5 h-3.5" />
-                <span>Instant Demo Access (Seeded Accounts)</span>
-              </div>
-              <p className="text-xs text-slate-300 mt-0.5">
-                Click any role to log in immediately with pre-configured data.
-              </p>
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                onClick={() => onQuickDemoLogin('student')}
-                className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white text-xs font-bold border border-white/20 transition-colors active:scale-95"
-              >
-                🎓 Demo Student (Yr 3)
-              </button>
-              <button
-                onClick={() => onQuickDemoLogin('faculty')}
-                className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-white text-xs font-bold border border-white/20 transition-colors active:scale-95"
-              >
-                📖 Demo Faculty (HOD)
-              </button>
-              <button
-                onClick={() => onQuickDemoLogin('admin')}
-                className="px-3 py-1.5 rounded-lg bg-amber-400 hover:bg-amber-300 text-navy-950 text-xs font-black transition-colors active:scale-95 shadow-sm"
-              >
-                🛡️ Demo Admin
-              </button>
-            </div>
-          </div>
-        </div>
+
 
       </div>
 

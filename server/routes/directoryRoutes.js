@@ -46,6 +46,9 @@ router.get('/faculty', authenticateToken, requireFacultyOrAdmin, (req, res) => {
       SELECT id, register_id, name, phone, department, designation, qualification, status, role, created_at
       FROM users
       WHERE role = 'faculty'
+        AND register_id != 'FAC001'
+        AND LOWER(name) NOT LIKE '%kishor kumar%'
+        AND (LOWER(name) NOT LIKE '%kishor%' OR LOWER(name) LIKE '%bala kishore%')
         AND LOWER(name) NOT LIKE '%shoba%'
         AND LOWER(name) NOT LIKE '%prof. administrator%'
     `;
@@ -70,7 +73,15 @@ router.get('/faculty', authenticateToken, requireFacultyOrAdmin, (req, res) => {
 router.get('/stats', authenticateToken, (req, res) => {
   try {
     const studentCount = db.prepare("SELECT COUNT(*) as count FROM users WHERE role = 'student'").get().count;
-    const facultyCount = db.prepare("SELECT COUNT(*) as count FROM users WHERE role = 'faculty'").get().count;
+    const facultyCount = db.prepare(`
+      SELECT COUNT(*) as count FROM users 
+      WHERE role = 'faculty'
+        AND register_id != 'FAC001'
+        AND LOWER(name) NOT LIKE '%kishor kumar%'
+        AND (LOWER(name) NOT LIKE '%kishor%' OR LOWER(name) LIKE '%bala kishore%')
+        AND LOWER(name) NOT LIKE '%shoba%'
+        AND LOWER(name) NOT LIKE '%prof. administrator%'
+    `).get().count;
     const sectionCount = db.prepare("SELECT COUNT(*) as count FROM sections").get().count;
     const timetableCount = db.prepare("SELECT COUNT(*) as count FROM timetables").get().count;
 
@@ -99,11 +110,28 @@ router.get('/stats', authenticateToken, (req, res) => {
 router.put('/users/:id', authenticateToken, requireAdmin, (req, res) => {
   try {
     const userId = parseInt(req.params.id, 10);
-    const { name, phone, year, designation, qualification, status } = req.body;
+    const { register_id, name, phone, year, designation, qualification, status } = req.body;
 
     const existing = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
     if (!existing) {
       return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Process and validate register_id (Employee ID)
+    let cleanRegisterId = existing.register_id;
+    if (register_id !== undefined) {
+      cleanRegisterId = String(register_id).trim().toUpperCase();
+      if (!cleanRegisterId) {
+        return res.status(400).json({ error: 'Employee ID is required and cannot be empty.' });
+      }
+
+      // Check duplicate register_id across other users
+      const duplicate = db.prepare('SELECT id, name, role FROM users WHERE register_id = ? AND id != ?').get(cleanRegisterId, userId);
+      if (duplicate) {
+        return res.status(400).json({
+          error: `Employee ID "${cleanRegisterId}" already belongs to another user: ${duplicate.name} (${duplicate.role}).`
+        });
+      }
     }
 
     const cleanName = name ? name.trim() : existing.name;
@@ -115,7 +143,8 @@ router.put('/users/:id', authenticateToken, requireAdmin, (req, res) => {
 
     db.prepare(`
       UPDATE users
-      SET name = ?,
+      SET register_id = ?,
+          name = ?,
           phone = ?,
           year = ?,
           designation = ?,
@@ -123,6 +152,7 @@ router.put('/users/:id', authenticateToken, requireAdmin, (req, res) => {
           status = ?
       WHERE id = ?
     `).run(
+      cleanRegisterId,
       cleanName,
       cleanPhone,
       cleanYear,
@@ -135,6 +165,20 @@ router.put('/users/:id', authenticateToken, requireAdmin, (req, res) => {
     // If faculty name changed, cascade update timetable references to maintain integrity
     if (existing.role === 'faculty' && cleanName !== existing.name) {
       db.prepare('UPDATE timetables SET faculty_name = ? WHERE faculty_name = ?').run(cleanName, existing.name);
+    }
+
+    // Log update event to Security Audit Trail
+    try {
+      db.prepare(`
+        INSERT INTO audit_logs (action, performed_by_id, target_user_id, details)
+        VALUES ('UPDATE_USER_PROFILE', ?, ?, ?)
+      `).run(
+        req.user.id,
+        userId,
+        `Updated ${existing.role} profile: ${cleanName} (ID: ${cleanRegisterId})`
+      );
+    } catch (e) {
+      // ignore
     }
 
     const updated = db.prepare('SELECT id, register_id, name, role, phone, year, department, designation, qualification, status FROM users WHERE id = ?').get(userId);
@@ -228,6 +272,16 @@ router.get('/audit-logs', authenticateToken, requireAdmin, (req, res) => {
     `).all();
 
     res.json({ count: logs.length, logs });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// DELETE Audit Logs (Admin only)
+router.delete('/audit-logs', authenticateToken, requireAdmin, (req, res) => {
+  try {
+    const deleted = db.prepare('DELETE FROM audit_logs').run();
+    res.json({ message: 'Security Audit Trail cleared successfully', cleared_count: deleted.changes });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

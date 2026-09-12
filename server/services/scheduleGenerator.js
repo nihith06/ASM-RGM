@@ -1,4 +1,4 @@
-import db, { OFFICIAL_FACULTY, OFFICIAL_SECTIONS } from '../db.js';
+import db, { OFFICIAL_FACULTY, OFFICIAL_SECTIONS, isHodFaculty } from '../db.js';
 
 export const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
@@ -27,7 +27,7 @@ export const YEAR_CURRICULUM = {
       { name: 'ADSA', weeklyHours: 4, blockSizes: [2, 2] },
       { name: 'OOPJ', weeklyHours: 4, blockSizes: [2, 2] },
       { name: 'PYP', weeklyHours: 4, blockSizes: [2, 2] },
-      { name: 'UHV', weeklyHours: 3, blockSizes: [2, 1] },
+      { name: 'UHV', weeklyHours: 3, blockSizes: [2, 1], nonAiml: true },
       { name: 'DMGT', weeklyHours: 3, blockSizes: [2, 1], nonAiml: true },
       { name: 'SEM', weeklyHours: 2, blockSizes: [2], nonAiml: true }
     ],
@@ -58,8 +58,8 @@ export const YEAR_CURRICULUM = {
       { name: 'DEEP LEARNING', weeklyHours: 4, blockSizes: [2, 2] },
       { name: 'MLOPS', weeklyHours: 4, blockSizes: [2, 2] },
       { name: 'BIG DATA', weeklyHours: 4, blockSizes: [2, 2] },
-      { name: 'AI ETHICS', weeklyHours: 3, blockSizes: [2, 1] },
-      { name: 'PROJECT WORK', weeklyHours: 4, blockSizes: [2, 2] },
+      { name: 'AI ETHICS', weeklyHours: 3, blockSizes: [2, 1], nonAiml: true },
+      { name: 'PROJECT WORK', weeklyHours: 4, blockSizes: [2, 2], nonAiml: true },
       { name: 'RESEARCH SEMINAR', weeklyHours: 2, blockSizes: [2], nonAiml: true }
     ],
     labs: [
@@ -78,25 +78,30 @@ export function getFacultyCompetencyRegistry() {
            c.assigned_subjects, c.assigned_labs, c.max_weekly_hours
     FROM users u
     LEFT JOIN faculty_workload_config c ON u.id = c.faculty_id
-    WHERE u.role = 'faculty' AND u.status = 'active'
+    WHERE u.role = 'faculty' 
+      AND u.status = 'active'
+      AND u.register_id != 'FAC001'
+      AND LOWER(u.name) NOT LIKE '%kishor kumar%'
     ORDER BY u.register_id ASC
   `).all();
 
-  return users.map(u => {
-    let subjects = [];
-    let labs = [];
-    try { subjects = u.assigned_subjects ? JSON.parse(u.assigned_subjects) : []; } catch (e) {}
-    try { labs = u.assigned_labs ? JSON.parse(u.assigned_labs) : []; } catch (e) {}
-    return {
-      id: u.id,
-      register_id: u.register_id,
-      name: u.name,
-      phone: u.phone || '',
-      subjects,
-      labs,
-      max_weekly_hours: u.max_weekly_hours || 16
-    };
-  });
+  return users
+    .filter(u => !isHodFaculty(u.name) && !isHodFaculty(u.register_id))
+    .map(u => {
+      let subjects = [];
+      let labs = [];
+      try { subjects = u.assigned_subjects ? JSON.parse(u.assigned_subjects) : []; } catch (e) {}
+      try { labs = u.assigned_labs ? JSON.parse(u.assigned_labs) : []; } catch (e) {}
+      return {
+        id: u.id,
+        register_id: u.register_id,
+        name: u.name,
+        phone: u.phone || '',
+        subjects,
+        labs,
+        max_weekly_hours: u.max_weekly_hours || 16
+      };
+    });
 }
 
 /**
@@ -247,6 +252,11 @@ export function generateSchedule({ sectionId = null, allSections = false, year =
     let blockedReason = null;
 
     for (const candidate of candidates) {
+      // 0. HOD Exclusion Constraint (HOD must never be assigned teaching slots)
+      if (isHodFaculty(candidate)) {
+        continue;
+      }
+
       // 1. Workload Cap Constraint (Hard 16 hours/week)
       const currentHrs = facultyHours[candidate] || 0;
       if (currentHrs + duration > 16) {
@@ -279,14 +289,20 @@ export function generateSchedule({ sectionId = null, allSections = false, year =
       // 5. Parallel Section Redundancy Constraint:
       // If other sections are teaching this same subject at this time, ensure at least 1 qualified faculty member remains completely free
       if (qualified.length > 1) {
-        const busyQualifiedCount = qualified.filter(qf => 
-          periods.some(p => facultyBusy[day][p]?.has(qf))
-        ).length;
+        const isSubjectTaughtInParallel = generatedSlots.some(s => 
+          s.day === day && periods.includes(s.period) && s.subject === subjectName && s.faculty_name !== '—'
+        );
 
-        // If choosing this candidate makes ALL qualified faculty busy during any of these periods, disallow it!
-        if (busyQualifiedCount + 1 >= qualified.length) {
-          blockedReason = `Parallel section redundancy: At least one qualified faculty member for '${subjectName}' must remain free on ${day}`;
-          continue;
+        if (isSubjectTaughtInParallel) {
+          const busyQualifiedCount = qualified.filter(qf => 
+            periods.some(p => facultyBusy[day][p]?.has(qf))
+          ).length;
+
+          // If choosing this candidate makes ALL qualified faculty busy during any of these periods, disallow it!
+          if (busyQualifiedCount + 1 >= qualified.length) {
+            blockedReason = `Parallel section redundancy: At least one qualified faculty member for '${subjectName}' must remain free on ${day}`;
+            continue;
+          }
         }
       }
 
@@ -520,13 +536,14 @@ export function generateSchedule({ sectionId = null, allSections = false, year =
     }
 
     for (const slot of generatedSlots) {
+      const safeFaculty = isHodFaculty(slot.faculty_name) ? '—' : slot.faculty_name;
       insertStmt.run(
         slot.year,
         slot.section_id,
         slot.day,
         slot.period,
         slot.subject,
-        slot.faculty_name,
+        safeFaculty,
         slot.room
       );
     }

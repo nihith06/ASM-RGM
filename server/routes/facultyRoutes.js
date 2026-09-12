@@ -18,6 +18,9 @@ router.get('/availability', authenticateToken, (req, res) => {
       SELECT id, register_id, name, department, designation, qualification, status
       FROM users
       WHERE role = 'faculty'
+        AND register_id != 'FAC001'
+        AND LOWER(name) NOT LIKE '%kishor kumar%'
+        AND (LOWER(name) NOT LIKE '%kishor%' OR LOWER(name) LIKE '%bala kishore%')
         AND LOWER(name) NOT LIKE '%shoba%'
         AND LOWER(name) NOT LIKE '%prof. administrator%'
     `;
@@ -442,6 +445,9 @@ router.get('/leaves', authenticateToken, (req, res) => {
       FROM faculty_leaves fl
       LEFT JOIN users u ON fl.faculty_id = u.id
       WHERE 1=1
+        AND (u.register_id != 'FAC001' OR u.register_id IS NULL)
+        AND LOWER(fl.faculty_name) NOT LIKE '%kishor kumar%'
+        AND (LOWER(fl.faculty_name) NOT LIKE '%kishor%' OR LOWER(fl.faculty_name) LIKE '%bala kishore%')
     `;
     const params = [];
     if (date) {

@@ -3,6 +3,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import bcrypt from 'bcryptjs';
 import { fileURLToPath } from 'node:url';
+import crypto from 'node:crypto';
 import { getSlotTimeRange, timesOverlap } from './timeUtils.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -16,8 +17,10 @@ if (!fs.existsSync(dataDir)) {
 const dbPath = path.join(dataDir, 'academic.db');
 const db = new DatabaseSync(dbPath);
 
-// Enable foreign keys
+// Enable foreign keys and concurrent access
 db.exec('PRAGMA foreign_keys = ON;');
+db.exec('PRAGMA journal_mode = WAL;');
+db.exec('PRAGMA busy_timeout = 5000;');
 
 // Initialize schema
 db.exec(`
@@ -134,6 +137,20 @@ db.exec(`
     FOREIGN KEY(faculty_id) REFERENCES users(id) ON DELETE CASCADE,
     UNIQUE(faculty_id)
   );
+
+  CREATE TABLE IF NOT EXISTS active_sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT UNIQUE NOT NULL,
+    user_id INTEGER NOT NULL,
+    role TEXT NOT NULL CHECK(role IN ('faculty', 'admin')),
+    last_active INTEGER NOT NULL,
+    unloaded_at INTEGER,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_active_sessions_user ON active_sessions(user_id);
+  CREATE INDEX IF NOT EXISTS idx_active_sessions_session ON active_sessions(session_id);
 `);
 
 // Additive columns for sections table
@@ -195,8 +212,8 @@ export function purgeOldNotifications() {
     // silent
   }
 }
-purgeOldNotifications();
-setInterval(purgeOldNotifications, 60 * 60 * 1000);
+const purgeInterval = setInterval(purgeOldNotifications, 60 * 60 * 1000);
+if (purgeInterval.unref) purgeInterval.unref();
 
 // 13 Official Sections: 1st Yr (4), 2nd Yr (4), 3rd Yr (4), 4th Yr (1)
 export const OFFICIAL_SECTIONS = [
@@ -217,7 +234,7 @@ export const OFFICIAL_SECTIONS = [
 
 // 19 Official RGMCET Faculty Members (Department of CSE - AI & ML)
 export const OFFICIAL_FACULTY = [
-  { id: 'FAC001', name: 'Dr. G. Kishor Kumar', desig: 'Professor & HOD', qual: 'M.Tech & Ph.D', phone: '9848022301', status: 'active' },
+  { id: 'FAC001', name: 'Dr. G. Kishor Kumar', desig: 'Professor', qual: 'M.Tech & Ph.D', phone: '9848022301', status: 'active' },
   { id: 'FAC002', name: 'Dr. J. Avinash', desig: 'Assistant Professor', qual: 'M.Tech & Ph.D', phone: '9848022302', status: 'active' },
   { id: 'FAC003', name: 'Dr. G. Chandana Swathi', desig: 'Assistant Professor', qual: 'M.Tech & Ph.D', phone: '9848022303', status: 'active' },
   { id: 'FAC004', name: 'Dr. Chakrapani', desig: 'Assistant Professor', qual: 'M.Tech & Ph.D', phone: '9848022304', status: 'active' },
@@ -250,46 +267,52 @@ export function isYear2AimlSubject(subject) {
   return s === 'AI' || s === 'ADSA' || s === 'ADSA LAB' || s === 'UHV' || s === 'PYP' || s === 'PYP LAB' || s === 'OOPJ' || s === 'OOPJ LAB';
 }
 
+export function isHodFaculty(nameOrId) {
+  if (!nameOrId) return false;
+  const s = String(nameOrId).trim().toLowerCase();
+  if (s.includes('bala kishore') || s.includes('fac016')) return false;
+  return s.includes('kishor kumar') || s.includes('dr. g. kishor') || s === 'fac001' || (s.includes('kishor') && !s.includes('bala'));
+}
+
 export function syncSectionsAndFaculty() {
   console.log('🔄 Synchronizing official 13 Sections and 19 Faculty registry...');
 
-  const adminHash = bcrypt.hashSync('admin123', 10);
-  const existingAdmin1 = db.prepare('SELECT id FROM users WHERE register_id = ?').get('ADMIN001');
-  if (!existingAdmin1) {
-    db.prepare(`
-      INSERT INTO users (register_id, name, password_hash, role, phone, department, designation, status)
-      VALUES ('ADMIN001', 'System Administrator', ?, 'admin', '9848011220', 'AIML', 'System Administrator', 'active')
-    `).run(adminHash);
-  } else {
-    db.prepare(`
-      UPDATE users 
-      SET name = 'System Administrator', designation = 'System Administrator', role = 'admin', password_hash = ? 
-      WHERE register_id = 'ADMIN001'
-    `).run(adminHash);
+  // 1. Purge legacy admin accounts so that ONLY the official 3 Admin accounts exist initially
+  db.prepare("DELETE FROM users WHERE role = 'admin' AND UPPER(register_id) IN ('ADMIN001', 'ADMIN002', 'ADMIN003')").run();
+
+  // 2. Initialize the official 3 Admin accounts (admin01, admin02, admin03)
+  const initialAdminHash = bcrypt.hashSync('1352468', 10);
+  const OFFICIAL_ADMINS = [
+    { id: 'admin01', name: 'System Administrator', phone: '9848011220', desig: 'System Administrator' },
+    { id: 'admin02', name: 'Academic Administrator', phone: '9848011221', desig: 'Academic Administrator' },
+    { id: 'admin03', name: 'Department Administrator', phone: '9848011222', desig: 'Department Administrator' }
+  ];
+
+  for (const adm of OFFICIAL_ADMINS) {
+    const existingAdmin = db.prepare('SELECT id, password_hash FROM users WHERE LOWER(register_id) = LOWER(?)').get(adm.id);
+    if (!existingAdmin) {
+      db.prepare(`
+        INSERT INTO users (register_id, name, password_hash, role, phone, department, designation, status)
+        VALUES (?, ?, ?, 'admin', ?, 'AIML', ?, 'active')
+      `).run(adm.id, adm.name, initialAdminHash, adm.phone, adm.desig);
+    } else {
+      // Update metadata without overwriting password if it was changed via OTP
+      db.prepare(`
+        UPDATE users
+        SET name = ?, phone = ?, designation = ?, role = 'admin', status = 'active'
+        WHERE id = ?
+      `).run(adm.name, adm.phone, adm.desig, existingAdmin.id);
+    }
   }
 
-  const existingAdmin2 = db.prepare('SELECT id FROM users WHERE register_id = ?').get('ADMIN002');
-  if (!existingAdmin2) {
-    db.prepare(`
-      INSERT INTO users (register_id, name, password_hash, role, phone, department, designation, status)
-      VALUES ('ADMIN002', 'Dr. K. S. Reddy (Vice-Principal / Admin)', ?, 'admin', '9848011221', 'AIML', 'Vice-Principal & Admin', 'active')
-    `).run(adminHash);
-  } else {
-    db.prepare(`
-      UPDATE users 
-      SET role = 'admin', password_hash = ? 
-      WHERE register_id = 'ADMIN002'
-    `).run(adminHash);
-  }
-
-  // Purge legacy unwanted faculty members and removed pending slots
+  // Purge legacy unwanted faculty members and removed pending slots (safeguarding all admins)
   db.prepare(`
     DELETE FROM users 
-    WHERE (LOWER(name) LIKE '%shoba%' 
+    WHERE role != 'admin'
+      AND (LOWER(name) LIKE '%shoba%' 
        OR LOWER(name) LIKE '%prof. administrator%' 
        OR register_id IN ('FAC020', 'FAC021') 
-       OR status = 'pending')
-      AND register_id NOT IN ('ADMIN001', 'ADMIN002');
+       OR status = 'pending');
   `).run();
   db.prepare(`
     DELETE FROM timetables 
@@ -333,27 +356,39 @@ export function syncSectionsAndFaculty() {
   insertRoomStmt.run('AIML-LAB1', 'lab', 60);
   insertRoomStmt.run('AIML-LAB2', 'lab', 60);
 
-  // 2. Upsert the 19 official faculty members
-  const facHash = bcrypt.hashSync('faculty123', 10);
-  const upsertFacultyStmt = db.prepare(`
-    INSERT INTO users (register_id, name, password_hash, role, phone, department, designation, qualification, status)
-    VALUES (?, ?, ?, 'faculty', ?, 'AIML', ?, ?, ?)
-    ON CONFLICT(register_id) DO UPDATE SET
-      name = excluded.name,
-      designation = excluded.designation,
-      qualification = excluded.qualification,
-      status = excluded.status,
-      phone = CASE WHEN users.phone IS NULL OR users.phone = '' THEN excluded.phone ELSE users.phone END
-  `);
-
+  // 2. Upsert the 19 official faculty members with default password: 12345678
+  const facHash = bcrypt.hashSync('12345678', 10);
   for (const f of OFFICIAL_FACULTY) {
-    upsertFacultyStmt.run(f.id, f.name, facHash, f.phone, f.desig, f.qual, f.status);
+    const existingFaculty = db.prepare("SELECT id, register_id, name FROM users WHERE role = 'faculty' AND (register_id = ? OR name = ?)").get(f.id, f.name);
+    if (existingFaculty) {
+      db.prepare(`
+        UPDATE users
+        SET designation = COALESCE(designation, ?),
+            qualification = COALESCE(qualification, ?),
+            status = COALESCE(status, ?),
+            phone = CASE WHEN users.phone IS NULL OR users.phone = '' THEN ? ELSE users.phone END
+        WHERE id = ?
+      `).run(f.desig, f.qual, f.status, f.phone, existingFaculty.id);
+    } else {
+      db.prepare(`
+        INSERT INTO users (register_id, name, password_hash, role, phone, department, designation, qualification, status)
+        VALUES (?, ?, ?, 'faculty', ?, 'AIML', ?, ?, ?)
+      `).run(f.id, f.name, facHash, f.phone, f.desig, f.qual, f.status);
+    }
   }
 
-  // 2b. Upsert faculty workload and subject/lab competencies (max 16 hrs/week cap)
+  // Set default password to 12345678 for all existing faculty accounts on legacy default 'faculty123'
+  const allFaculty = db.prepare("SELECT id, password_hash FROM users WHERE role = 'faculty'").all();
+  for (const fac of allFaculty) {
+    if (bcrypt.compareSync('faculty123', fac.password_hash)) {
+      db.prepare("UPDATE users SET password_hash = ? WHERE id = ?").run(facHash, fac.id);
+    }
+  }
+
+  // 2b. Upsert faculty workload and subject/lab competencies (max 16 hrs/week cap; HOD 0 hrs)
   const insertWorkloadStmt = db.prepare(`
     INSERT INTO faculty_workload_config (faculty_id, assigned_subjects, assigned_labs, max_weekly_hours)
-    VALUES (?, ?, ?, 16)
+    VALUES (?, ?, ?, ?)
     ON CONFLICT(faculty_id) DO UPDATE SET
       assigned_subjects = excluded.assigned_subjects,
       assigned_labs = excluded.assigned_labs,
@@ -361,32 +396,32 @@ export function syncSectionsAndFaculty() {
   `);
 
   const facultyWorkloadMap = {
-    'FAC001': { subjects: ['AI', 'IP Advanced', 'CV&IP'], labs: ['AI&SP LAB'] },
-    'FAC002': { subjects: ['ADSA', 'AI', 'EDA'], labs: ['ADSA LAB'] },
-    'FAC003': { subjects: ['NLP', 'CV&IP', 'SSP'], labs: ['CV&ML LAB', 'TINKERING LAB'] },
-    'FAC004': { subjects: ['CV&IP', 'IP'], labs: ['CV&ML LAB', 'TINKERING LAB'] },
-    'FAC005': { subjects: ['IP', 'UHV', 'EDA'], labs: ['CP LAB'] },
-    'FAC006': { subjects: ['EDA', 'OOPJ', 'FSD'], labs: ['CP LAB', 'OOPJ LAB'] },
-    'FAC007': { subjects: ['QT&A', 'EDA'], labs: ['AI&SP LAB'] },
-    'FAC008': { subjects: ['FSD', 'PYP', 'QT&A'], labs: ['PYP LAB'] },
-    'FAC009': { subjects: ['SSP', 'ADSA'], labs: ['AI&SP LAB', 'TINKERING LAB'] },
-    'FAC010': { subjects: ['NLP', 'FSD'], labs: ['AI&SP LAB'] },
-    'FAC011': { subjects: ['NLP', 'AI', 'CV&IP'], labs: ['AI&SP LAB'] },
-    'FAC012': { subjects: ['ADSA', 'SSP', 'QT&A'], labs: ['ADSA LAB'] },
-    'FAC013': { subjects: ['CV&IP', 'IP', 'FSD'], labs: ['CV&ML LAB', 'TINKERING LAB'] },
-    'FAC014': { subjects: ['SSP', 'UHV', 'QT&A'], labs: ['CP LAB'] },
-    'FAC015': { subjects: ['OOPJ', 'AI', 'FSD'], labs: ['OOPJ LAB'] },
-    'FAC016': { subjects: ['PYP', 'FSD'], labs: ['PYP LAB'] },
-    'FAC017': { subjects: ['EDA', 'ADSA', 'SSP'], labs: ['ADSA LAB'] },
-    'FAC018': { subjects: ['PYP', 'OOPJ', 'FSD'], labs: ['PYP LAB'] },
-    'FAC019': { subjects: ['QT&A', 'IP', 'EDA'], labs: ['CP LAB'] }
+    'FAC001': { subjects: [], labs: [], max_weekly_hours: 0 }, // HOD: Strictly 0 teaching subjects/labs
+    'FAC002': { subjects: ['ADSA', 'AI', 'EDA', 'CV&IP', 'IP', 'Deep Learning', 'DEEP LEARNING', 'MLOPS', 'BIG DATA'], labs: ['ADSA LAB', 'TINKERING LAB', 'CV&ML LAB', 'DL LAB'] },
+    'FAC003': { subjects: ['NLP', 'CV&IP', 'SSP', 'MLOPS', 'Deep Learning', 'DEEP LEARNING'], labs: ['CV&ML LAB', 'TINKERING LAB', 'DL LAB'] },
+    'FAC004': { subjects: ['CV&IP', 'IP', 'PROJECT WORK', 'Deep Learning', 'DEEP LEARNING', 'BIG DATA'], labs: ['CV&ML LAB', 'TINKERING LAB', 'DL LAB'] },
+    'FAC005': { subjects: ['IP', 'UHV', 'EDA', 'AI ETHICS'], labs: ['CP LAB', 'DL LAB'] },
+    'FAC006': { subjects: ['EDA', 'OOPJ', 'FSD', 'PYP', 'IP', 'PROJECT WORK', 'MLOPS', 'BIG DATA'], labs: ['CP LAB', 'OOPJ LAB', 'BIG DATA LAB'] },
+    'FAC007': { subjects: ['QT&A', 'EDA', 'AI', 'CV&IP', 'BIG DATA', 'Deep Learning', 'DEEP LEARNING'], labs: ['AI&SP LAB', 'BIG DATA LAB', 'DL LAB'] },
+    'FAC008': { subjects: ['FSD', 'PYP', 'QT&A', 'OOPJ', 'PROJECT WORK', 'MLOPS', 'Deep Learning', 'DEEP LEARNING'], labs: ['PYP LAB', 'BIG DATA LAB', 'DL LAB'] },
+    'FAC009': { subjects: ['SSP', 'ADSA', 'AI', 'UHV', 'Deep Learning', 'DEEP LEARNING', 'BIG DATA'], labs: ['AI&SP LAB', 'TINKERING LAB', 'DL LAB'] },
+    'FAC010': { subjects: ['NLP', 'FSD', 'AI', 'CV&IP', 'Deep Learning', 'DEEP LEARNING', 'MLOPS'], labs: ['AI&SP LAB', 'TINKERING LAB', 'CV&ML LAB', 'DL LAB'] },
+    'FAC011': { subjects: ['NLP', 'AI', 'CV&IP', 'Deep Learning', 'DEEP LEARNING', 'MLOPS', 'BIG DATA'], labs: ['AI&SP LAB', 'TINKERING LAB', 'CV&ML LAB', 'DL LAB'] },
+    'FAC012': { subjects: ['ADSA', 'SSP', 'QT&A', 'NLP', 'UHV', 'BIG DATA', 'MLOPS'], labs: ['ADSA LAB', 'CV&ML LAB', 'BIG DATA LAB', 'DL LAB'] },
+    'FAC013': { subjects: ['CV&IP', 'IP', 'FSD', 'PROJECT WORK', 'Deep Learning', 'DEEP LEARNING', 'BIG DATA'], labs: ['CV&ML LAB', 'TINKERING LAB', 'DL LAB'] },
+    'FAC014': { subjects: ['SSP', 'UHV', 'QT&A', 'AI ETHICS'], labs: ['CP LAB', 'DL LAB'] },
+    'FAC015': { subjects: ['OOPJ', 'AI', 'FSD', 'PYP', 'NLP', 'PROJECT WORK', 'MLOPS', 'Deep Learning', 'DEEP LEARNING'], labs: ['OOPJ LAB', 'DL LAB'] },
+    'FAC016': { subjects: ['PYP', 'FSD', 'OOPJ', 'PROJECT WORK', 'BIG DATA', 'MLOPS'], labs: ['PYP LAB', 'BIG DATA LAB', 'DL LAB'] },
+    'FAC017': { subjects: ['EDA', 'ADSA', 'SSP', 'CV&IP', 'BIG DATA', 'Deep Learning', 'DEEP LEARNING'], labs: ['ADSA LAB', 'CV&ML LAB', 'BIG DATA LAB', 'DL LAB'] },
+    'FAC018': { subjects: ['PYP', 'OOPJ', 'FSD', 'PROJECT WORK', 'Deep Learning', 'DEEP LEARNING', 'MLOPS'], labs: ['PYP LAB', 'BIG DATA LAB', 'DL LAB'] },
+    'FAC019': { subjects: ['QT&A', 'IP', 'EDA', 'PROJECT WORK', 'BIG DATA'], labs: ['CP LAB', 'DL LAB', 'BIG DATA LAB'] }
   };
 
   for (const f of OFFICIAL_FACULTY) {
-    const userRec = db.prepare('SELECT id FROM users WHERE register_id = ?').get(f.id);
+    const userRec = db.prepare("SELECT id FROM users WHERE role = 'faculty' AND (register_id = ? OR name = ?)").get(f.id, f.name);
     if (userRec) {
-      const config = facultyWorkloadMap[f.id] || { subjects: ['AI'], labs: ['AI&SP LAB'] };
-      insertWorkloadStmt.run(userRec.id, JSON.stringify(config.subjects), JSON.stringify(config.labs));
+      const config = facultyWorkloadMap[f.id] || { subjects: ['AI'], labs: ['AI&SP LAB'], max_weekly_hours: 16 };
+      insertWorkloadStmt.run(userRec.id, JSON.stringify(config.subjects), JSON.stringify(config.labs), config.max_weekly_hours !== undefined ? config.max_weekly_hours : 16);
     }
   }
 
@@ -407,6 +442,13 @@ export function syncSectionsAndFaculty() {
     WHERE year = 2 
       AND UPPER(TRIM(subject)) NOT IN ('AI', 'ADSA', 'UHV', 'PYP', 'ADSA LAB', 'OOPJ', 'OOPJ LAB', 'PYP LAB')
   `).run();
+  db.prepare(`
+    UPDATE timetables 
+    SET faculty_name = '—' 
+    WHERE LOWER(faculty_name) LIKE '%kishor kumar%' 
+       OR (LOWER(faculty_name) LIKE '%kishor%' AND LOWER(faculty_name) NOT LIKE '%bala kishore%')
+  `).run();
+  db.prepare("UPDATE users SET designation = 'Professor' WHERE register_id = 'FAC001'").run();
 }
 
 // Seed default data
@@ -414,23 +456,10 @@ export function seedDatabase() {
   try { db.exec("ALTER TABLE users ADD COLUMN status TEXT DEFAULT 'active';"); } catch (e) {}
   try { db.exec("ALTER TABLE users ADD COLUMN qualification TEXT;"); } catch (e) {}
 
-  const adminCheck = db.prepare('SELECT COUNT(*) as count FROM users WHERE role = ?').get('admin');
+  const studentCheck = db.prepare('SELECT COUNT(*) as count FROM users WHERE role = ?').get('student');
   
-  if (adminCheck.count === 0) {
+  if (studentCheck.count === 0) {
     console.log('🌱 Seeding database with initial academic records...');
-    
-    // Default Admin 1 (Password: admin123)
-    const adminHash = bcrypt.hashSync('admin123', 10);
-    db.prepare(`
-      INSERT INTO users (register_id, name, password_hash, role, phone, department, designation, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 'active')
-    `).run('ADMIN001', 'System Administrator', adminHash, 'admin', '9848011220', 'AIML', 'System Administrator');
-
-    // Default Admin 2 (Password: admin123)
-    db.prepare(`
-      INSERT INTO users (register_id, name, password_hash, role, phone, department, designation, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 'active')
-    `).run('ADMIN002', 'Dr. K. S. Reddy (Vice-Principal / Admin)', adminHash, 'admin', '9848011221', 'AIML', 'Vice-Principal & Admin');
 
     // Sample Students (Password: student123)
     const stuHash = bcrypt.hashSync('student123', 10);
@@ -455,14 +484,14 @@ export function seedDatabase() {
     }
   }
 
-  // Ensure multiple admins exist even if DB was previously seeded
-  const admin2 = db.prepare('SELECT id FROM users WHERE register_id = ?').get('ADMIN002');
-  if (!admin2) {
-    const adminHash = bcrypt.hashSync('admin123', 10);
+  // Ensure default demo student exists
+  const demoStudent = db.prepare('SELECT id FROM users WHERE register_id = ?').get('22091A3324');
+  if (!demoStudent) {
+    const stuHash = bcrypt.hashSync('student123', 10);
     db.prepare(`
-      INSERT INTO users (register_id, name, password_hash, role, phone, department, designation, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 'active')
-    `).run('ADMIN002', 'Dr. K. S. Reddy (Vice-Principal / Admin)', adminHash, 'admin', '9848011221', 'AIML', 'Vice-Principal & Admin');
+      INSERT INTO users (register_id, name, password_hash, role, phone, department, designation, year)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run('22091A3324', 'Karthik Kumar', stuHash, 'student', '9123456705', 'AIML', 'Student', 3);
   }
 
   // Always synchronize 13 sections & 19 faculty members
@@ -491,7 +520,81 @@ export function seedDatabase() {
     WHERE status IN ('office_hours', 'meeting', 'mentoring', 'unavailable')
   `).run();
 
+  // Ensure all timetable slots across all sections have valid room assignments
+  ensureAllRoomsAssigned();
+
   console.log('✅ Database successfully initialized with 13 Sections and 19 Faculty registry!');
+}
+
+export function ensureAllRoomsAssigned() {
+  const allSecs = db.prepare("SELECT id, year, name FROM sections").all();
+  const updateRoomStmt = db.prepare("UPDATE timetables SET room = ? WHERE id = ?");
+  const emptyRows = db.prepare("SELECT id, year, section_id, subject FROM timetables WHERE room IS NULL OR room = ''").all();
+
+  if (emptyRows.length > 0) {
+    db.exec('BEGIN TRANSACTION;');
+    try {
+      for (const row of emptyRows) {
+        const sec = allSecs.find(s => s.id === row.section_id);
+        const sub = (row.subject || '').toUpperCase();
+        let assignedRoom = '';
+
+        if (sub.includes('AI&SP LAB') || sub.includes('AI&SP')) assignedRoom = 'AI&SP LAB';
+        else if (sub.includes('CV&ML LAB') || sub.includes('CV&ML')) assignedRoom = 'CV&ML LAB';
+        else if (sub.includes('TINKERING')) assignedRoom = 'TINKERING LAB';
+        else if (sub.includes('BEE LAB')) assignedRoom = 'BEE LAB';
+        else if (sub.includes('CP LAB')) assignedRoom = 'CP LAB';
+        else if (sub.includes('EP LAB')) assignedRoom = 'EP LAB';
+        else if (sub.includes('ADSA LAB')) assignedRoom = 'ADSA LAB';
+        else if (sub.includes('OOPJ LAB')) assignedRoom = 'OOPJ LAB';
+        else if (sub.includes('PYP LAB')) assignedRoom = 'PYP LAB';
+        else if (sub.includes('LIB')) assignedRoom = 'LIBRARY';
+        else if (row.year === 1) {
+          if (sec?.name?.includes('B')) assignedRoom = 'AIML-LH2';
+          else if (sec?.name?.includes('C')) assignedRoom = 'AIML-LH3';
+          else if (sec?.name?.includes('D')) assignedRoom = 'AIML-LH4';
+          else assignedRoom = 'AIML-LH1';
+        } else if (row.year === 2) {
+          if (sec?.name?.includes('B')) assignedRoom = 'RG-208';
+          else if (sec?.name?.includes('C')) assignedRoom = 'RG-209';
+          else if (sec?.name?.includes('D')) assignedRoom = 'RG-210';
+          else assignedRoom = 'RG-207';
+        } else if (row.year === 3) {
+          if (sec?.name?.includes('B')) assignedRoom = 'ET-3050';
+          else if (sec?.name?.includes('C')) assignedRoom = 'ET-3070';
+          else if (sec?.name?.includes('D')) assignedRoom = 'ET-3060';
+          else assignedRoom = 'ET-3080';
+        } else if (row.year === 4) {
+          assignedRoom = 'ET-401';
+        }
+        updateRoomStmt.run(assignedRoom, row.id);
+      }
+      db.exec('COMMIT;');
+      console.log(`✅ Populated room numbers for ${emptyRows.length} timetable entries.`);
+    } catch (e) {
+      db.exec('ROLLBACK;');
+      console.error('Failed to populate room numbers:', e);
+    }
+  }
+
+  // Ensure Year 3 Section A matches Image 2 rooms
+  const sec3A = allSecs.find(s => s.year === 3 && s.name.toLowerCase().includes('section a'));
+  if (sec3A) {
+    const updateSec3AStmt = db.prepare("UPDATE timetables SET room = ? WHERE year = 3 AND section_id = ? AND day = ? AND period = ?");
+    const sec3ARooms = {
+      Monday: { 1: 'ET-3080', 2: 'ET-3080', 3: 'ET-3080', 4: 'ET-3080', 5: 'AI&SP LAB', 6: 'AI&SP LAB', 7: 'AI&SP LAB' },
+      Tuesday: { 1: 'ET-3080', 2: 'ET-3080', 3: 'ET-3050', 4: 'ET-3050', 5: 'TINKERING LAB', 6: 'TINKERING LAB', 7: 'TINKERING LAB' },
+      Wednesday: { 1: 'ET-3080', 2: 'ET-3080', 3: 'ET-3070', 4: 'ET-3070', 5: 'ET-3070', 6: 'ET-3070', 7: 'ET-3070' },
+      Thursday: { 1: 'ET-3080', 2: 'ET-3080', 3: 'ET-3050', 4: 'ET-3050', 5: 'CV&ML LAB', 6: 'CV&ML LAB', 7: 'CV&ML LAB' },
+      Friday: { 1: 'ET-3080', 2: 'ET-3080', 3: 'ET-3080', 4: 'ET-3080', 5: 'LIBRARY', 6: 'ET-3080', 7: 'ET-3080' },
+      Saturday: { 1: 'ET-3050', 2: 'ET-3050', 3: 'LIBRARY', 4: 'LIBRARY', 5: 'ET-3050', 6: 'ET-3050', 7: 'ET-3050' },
+    };
+    for (const [day, pMap] of Object.entries(sec3ARooms)) {
+      for (const [p, rm] of Object.entries(pMap)) {
+        updateSec3AStmt.run(rm, sec3A.id, day, parseInt(p, 10));
+      }
+    }
+  }
 }
 
 export function populateTimetablesData() {
@@ -516,7 +619,8 @@ export function populateTimetablesData() {
       END, name ASC
   `).all();
 
-  const allFaculty = OFFICIAL_FACULTY.filter(f => f.status === 'active').map(f => f.name);
+  // Exclude HOD (Dr. G. Kishor Kumar) completely from teaching faculty allocations
+  const allFaculty = OFFICIAL_FACULTY.filter(f => f.status === 'active' && !isHodFaculty(f.name) && f.id !== 'FAC001').map(f => f.name);
 
   // In-memory tracker of inserted entries to guarantee zero time conflicts
   const trackedEntries = [];
@@ -537,30 +641,18 @@ export function populateTimetablesData() {
   let facultyRoundRobin = 0;
   function findFreeFaculty(day, year, periods, preferred = null) {
     const periodArr = Array.isArray(periods) ? periods : [periods];
-    const hasP2 = periodArr.some(p => parseInt(p, 10) === 2);
-    if (preferred) {
+    if (preferred && !isHodFaculty(preferred)) {
       const ok = periodArr.every(p => !checkConflict(preferred, day, year, p));
       if (ok) return preferred;
     }
     const n = allFaculty.length;
     for (let i = 0; i < n; i++) {
       const candidate = allFaculty[(facultyRoundRobin + i) % n];
-      // Keep Dr. G. Kishor Kumar free on Thursday Period 2 for office hours and Wednesday Periods 1 & 2
-      const isKishor = candidate.toLowerCase().includes('kishor');
-      if (day === 'Thursday' && hasP2 && isKishor) {
-        continue;
-      }
-      if (day === 'Wednesday' && periodArr.some(p => [1, 2].includes(parseInt(p, 10))) && isKishor) {
-        continue;
-      }
       const ok = periodArr.every(p => !checkConflict(candidate, day, year, p));
       if (ok) {
         facultyRoundRobin = (facultyRoundRobin + i + 1) % n;
         return candidate;
       }
-    }
-    if (day === 'Thursday' && hasP2) {
-      return allFaculty.find(f => !f.toLowerCase().includes('kishor')) || allFaculty[1];
     }
     return allFaculty[0];
   }
@@ -613,7 +705,7 @@ export function populateTimetablesData() {
       { period: 4, subject: 'IP', faculty: 'Mrs. C. Leelavathi' },
       { period: 5, subject: 'IP', faculty: 'Mrs. C. Leelavathi' },
       { period: 6, subject: 'LAAC', faculty: '—' },
-      { period: 7, subject: 'IP Advanced', faculty: 'Dr. G. Kishor Kumar' }, // 04:00 - 04:50 PM
+      { period: 7, subject: 'IP Advanced', faculty: 'Mrs. C. Leelavathi' }, // 04:00 - 04:50 PM
     ],
     Thursday: [
       { period: 1, subject: 'EP', faculty: '—' },
@@ -644,61 +736,61 @@ export function populateTimetablesData() {
     ],
   };
 
-  // Official 3rd Year - Section A Schedule from Source-of-Truth Photo (Room numbers neglected per user request)
+  // Official 3rd Year - Section A Schedule from Source-of-Truth Photo (Image 2 with ET-3080/3050/3070 and Labs)
   const year3SecASchedule = {
     Monday: [
-      { period: 1, subject: 'NLP', faculty: 'Mr. V. Phanishwara Hara Gopal', room: '' },
-      { period: 2, subject: 'NLP', faculty: 'Mr. V. Phanishwara Hara Gopal', room: '' },
-      { period: 3, subject: 'QT&A', faculty: 'Dr. S. Farooq', room: '' },
-      { period: 4, subject: 'QT&A', faculty: 'Dr. S. Farooq', room: '' },
-      { period: 5, subject: 'AI&SP LAB', faculty: 'Ms. E. Naveena', room: '' },
-      { period: 6, subject: 'AI&SP LAB', faculty: 'Ms. E. Naveena', room: '' },
-      { period: 7, subject: 'AI&SP LAB', faculty: 'Ms. E. Naveena', room: '' },
+      { period: 1, subject: 'NLP', faculty: 'Mr. V. Phanishwara Hara Gopal', room: 'ET-3080' },
+      { period: 2, subject: 'NLP', faculty: 'Mr. V. Phanishwara Hara Gopal', room: 'ET-3080' },
+      { period: 3, subject: 'QT&A', faculty: 'Dr. S. Farooq', room: 'ET-3080' },
+      { period: 4, subject: 'QT&A', faculty: 'Dr. S. Farooq', room: 'ET-3080' },
+      { period: 5, subject: 'AI&SP LAB', faculty: 'Ms. E. Naveena', room: 'AI&SP LAB' },
+      { period: 6, subject: 'AI&SP LAB', faculty: 'Ms. E. Naveena', room: 'AI&SP LAB' },
+      { period: 7, subject: 'AI&SP LAB', faculty: 'Ms. E. Naveena', room: 'AI&SP LAB' },
     ],
     Tuesday: [
-      { period: 1, subject: 'CV&IP', faculty: 'Dr. Chakrapani', room: '' },
-      { period: 2, subject: 'CV&IP', faculty: 'Dr. Chakrapani', room: '' },
-      { period: 3, subject: 'SEM', faculty: '—', room: '' },
-      { period: 4, subject: 'SEM', faculty: '—', room: '' },
-      { period: 5, subject: 'TINKERING LAB', faculty: 'Dr. Chakrapani', room: '' },
-      { period: 6, subject: 'TINKERING LAB', faculty: 'Dr. Chakrapani', room: '' },
-      { period: 7, subject: 'TINKERING LAB', faculty: 'Dr. Chakrapani', room: '' },
+      { period: 1, subject: 'CV&IP', faculty: 'Dr. Chakrapani', room: 'ET-3080' },
+      { period: 2, subject: 'CV&IP', faculty: 'Dr. Chakrapani', room: 'ET-3080' },
+      { period: 3, subject: 'SEM', faculty: '—', room: 'ET-3050' },
+      { period: 4, subject: 'SEM', faculty: '—', room: 'ET-3050' },
+      { period: 5, subject: 'TINKERING LAB', faculty: 'Dr. Chakrapani', room: 'TINKERING LAB' },
+      { period: 6, subject: 'TINKERING LAB', faculty: 'Dr. Chakrapani', room: 'TINKERING LAB' },
+      { period: 7, subject: 'TINKERING LAB', faculty: 'Dr. Chakrapani', room: 'TINKERING LAB' },
     ],
     Wednesday: [
-      { period: 1, subject: 'SSP', faculty: 'Ms. E. Naveena', room: '' },
-      { period: 2, subject: 'SSP', faculty: 'Ms. E. Naveena', room: '' },
-      { period: 3, subject: 'EDA', faculty: 'Mr. P. Sreekanth Reddy', room: '' },
-      { period: 4, subject: 'EDA', faculty: 'Mr. P. Sreekanth Reddy', room: '' },
-      { period: 5, subject: 'SEM', faculty: '—', room: '' },
-      { period: 6, subject: 'NLP', faculty: 'Mr. V. Phanishwara Hara Gopal', room: '' },
-      { period: 7, subject: 'NLP', faculty: 'Mr. V. Phanishwara Hara Gopal', room: '' },
+      { period: 1, subject: 'SSP', faculty: 'Ms. E. Naveena', room: 'ET-3080' },
+      { period: 2, subject: 'SSP', faculty: 'Ms. E. Naveena', room: 'ET-3080' },
+      { period: 3, subject: 'EDA', faculty: 'Mr. P. Sreekanth Reddy', room: 'ET-3070' },
+      { period: 4, subject: 'EDA', faculty: 'Mr. P. Sreekanth Reddy', room: 'ET-3070' },
+      { period: 5, subject: 'SEM', faculty: '—', room: 'ET-3070' },
+      { period: 6, subject: 'NLP', faculty: 'Mr. V. Phanishwara Hara Gopal', room: 'ET-3070' },
+      { period: 7, subject: 'NLP', faculty: 'Mr. V. Phanishwara Hara Gopal', room: 'ET-3070' },
     ],
     Thursday: [
-      { period: 1, subject: 'FSD', faculty: 'Mr. S. Kalim Peerulla Basha', room: '' },
-      { period: 2, subject: 'FSD', faculty: 'Mr. S. Kalim Peerulla Basha', room: '' },
-      { period: 3, subject: 'SEM', faculty: '—', room: '' },
-      { period: 4, subject: 'SEM', faculty: '—', room: '' },
-      { period: 5, subject: 'CV&ML LAB', faculty: 'Dr. Chakrapani', room: '' },
-      { period: 6, subject: 'CV&ML LAB', faculty: 'Dr. Chakrapani', room: '' },
-      { period: 7, subject: 'CV&ML LAB', faculty: 'Dr. Chakrapani', room: '' },
+      { period: 1, subject: 'FSD', faculty: 'Mr. S. Kalim Peerulla Basha', room: 'ET-3080' },
+      { period: 2, subject: 'FSD', faculty: 'Mr. S. Kalim Peerulla Basha', room: 'ET-3080' },
+      { period: 3, subject: 'SEM', faculty: '—', room: 'ET-3050' },
+      { period: 4, subject: 'SEM', faculty: '—', room: 'ET-3050' },
+      { period: 5, subject: 'CV&ML LAB', faculty: 'Dr. Chakrapani', room: 'CV&ML LAB' },
+      { period: 6, subject: 'CV&ML LAB', faculty: 'Dr. Chakrapani', room: 'CV&ML LAB' },
+      { period: 7, subject: 'CV&ML LAB', faculty: 'Dr. Chakrapani', room: 'CV&ML LAB' },
     ],
     Friday: [
-      { period: 1, subject: 'QT&A', faculty: 'Dr. S. Farooq', room: '' },
-      { period: 2, subject: 'QT&A', faculty: 'Dr. S. Farooq', room: '' },
-      { period: 3, subject: 'SSP', faculty: 'Ms. E. Naveena', room: '' },
-      { period: 4, subject: 'SSP', faculty: 'Ms. E. Naveena', room: '' },
-      { period: 5, subject: 'LIB', faculty: '—', room: '' },
-      { period: 6, subject: 'CV&IP', faculty: 'Dr. Chakrapani', room: '' },
-      { period: 7, subject: 'CV&IP', faculty: 'Dr. Chakrapani', room: '' },
+      { period: 1, subject: 'QT&A', faculty: 'Dr. S. Farooq', room: 'ET-3080' },
+      { period: 2, subject: 'QT&A', faculty: 'Dr. S. Farooq', room: 'ET-3080' },
+      { period: 3, subject: 'SSP', faculty: 'Ms. E. Naveena', room: 'ET-3080' },
+      { period: 4, subject: 'SSP', faculty: 'Ms. E. Naveena', room: 'ET-3080' },
+      { period: 5, subject: 'LIB', faculty: '—', room: 'LIBRARY' },
+      { period: 6, subject: 'CV&IP', faculty: 'Dr. Chakrapani', room: 'ET-3080' },
+      { period: 7, subject: 'CV&IP', faculty: 'Dr. Chakrapani', room: 'ET-3080' },
     ],
     Saturday: [
-      { period: 1, subject: 'EDA', faculty: 'Mr. P. Sreekanth Reddy', room: '' },
-      { period: 2, subject: 'EDA', faculty: 'Mr. P. Sreekanth Reddy', room: '' },
-      { period: 3, subject: 'LIB', faculty: '—', room: '' },
-      { period: 4, subject: 'LIB', faculty: '—', room: '' },
-      { period: 5, subject: 'SEM', faculty: '—', room: '' },
-      { period: 6, subject: 'SEM', faculty: '—', room: '' },
-      { period: 7, subject: 'FSD', faculty: 'Mr. S. Kalim Peerulla Basha', room: '' },
+      { period: 1, subject: 'EDA', faculty: 'Mr. P. Sreekanth Reddy', room: 'ET-3050' },
+      { period: 2, subject: 'EDA', faculty: 'Mr. P. Sreekanth Reddy', room: 'ET-3050' },
+      { period: 3, subject: 'LIB', faculty: '—', room: 'LIBRARY' },
+      { period: 4, subject: 'LIB', faculty: '—', room: 'LIBRARY' },
+      { period: 5, subject: 'SEM', faculty: '—', room: 'ET-3050' },
+      { period: 6, subject: 'SEM', faculty: '—', room: 'ET-3050' },
+      { period: 7, subject: 'FSD', faculty: 'Mr. S. Kalim Peerulla Basha', room: 'ET-3050' },
     ],
   };
 
@@ -897,8 +989,8 @@ export function populateTimetablesData() {
       { period: 7, subject: 'ADSA', faculty: 'Dr. J. Avinash', room: 'RG-207' },
     ],
     Wednesday: [
-      { period: 1, subject: 'OOPJ', faculty: 'Dr. G. Kishor Kumar', room: 'RG-207' },
-      { period: 2, subject: 'OOPJ', faculty: 'Dr. G. Kishor Kumar', room: 'RG-207' },
+      { period: 1, subject: 'OOPJ', faculty: 'Mrs. B.V.S.N. Lakshmi', room: 'RG-207' },
+      { period: 2, subject: 'OOPJ', faculty: 'Mrs. B.V.S.N. Lakshmi', room: 'RG-207' },
       { period: 3, subject: 'ES', faculty: '—', room: 'RG-207' },
       { period: 4, subject: 'ES', faculty: '—', room: 'RG-207' },
       { period: 5, subject: 'SEM', faculty: '—', room: 'RG-207' },
@@ -1108,11 +1200,11 @@ export function populateTimetablesData() {
     ],
   };
 
-  // 1. Seed Year 1 Sec A, Year 2 Sec A, Year 2 Sec B, Year 2 Sec C, Year 2 Sec D, and Year 3 Sec A
+  // 1. Seed Year 1 Sec A, Year 2 Sec A-D, and Year 3 Sec A-D
   for (const day of days) {
     if (sec1A) {
       for (const s of year1Schedule[day]) {
-        insertSlot(1, sec1A.id, day, s.period, s.subject, s.faculty, s.room || '');
+        insertSlot(1, sec1A.id, day, s.period, s.subject, s.faculty, s.room || (s.subject.includes('LAB') ? s.subject : 'AIML-LH1'));
       }
     }
     if (sec2A) {
@@ -1137,22 +1229,22 @@ export function populateTimetablesData() {
     }
     if (sec3A) {
       for (const s of year3SecASchedule[day]) {
-        insertSlot(3, sec3A.id, day, s.period, s.subject, s.faculty, s.room || '');
+        insertSlot(3, sec3A.id, day, s.period, s.subject, s.faculty, s.room || 'ET-3080');
       }
     }
     if (sec3B) {
       for (const s of year3SecBSchedule[day]) {
-        insertSlot(3, sec3B.id, day, s.period, s.subject, s.faculty, s.room || '');
+        insertSlot(3, sec3B.id, day, s.period, s.subject, s.faculty, s.room || (s.subject.toUpperCase().includes('LAB') ? s.subject : 'ET-3050'));
       }
     }
     if (sec3C) {
       for (const s of year3SecCSchedule[day]) {
-        insertSlot(3, sec3C.id, day, s.period, s.subject, s.faculty, s.room || '');
+        insertSlot(3, sec3C.id, day, s.period, s.subject, s.faculty, s.room || (s.subject.toUpperCase().includes('LAB') ? s.subject : 'ET-3070'));
       }
     }
     if (sec3D) {
       for (const s of year3SecDSchedule[day]) {
-        insertSlot(3, sec3D.id, day, s.period, s.subject, s.faculty, s.room || '');
+        insertSlot(3, sec3D.id, day, s.period, s.subject, s.faculty, s.room || (s.subject.toUpperCase().includes('LAB') ? s.subject : 'ET-3060'));
       }
     }
   }
@@ -1176,9 +1268,9 @@ export function populateTimetablesData() {
           continue;
         }
 
-        // Guarantee Dr. G. Kishor Kumar teaches Year 4 on Wednesday in Section A (01:50 - 02:40 PM)
+        // Year 4 on Wednesday in Section A (01:50 - 02:40 PM)
         if (sec.year === 4 && day === 'Wednesday' && p === 5 && sec.name.toLowerCase().includes('section a')) {
-          insertSlot(sec.year, sec.id, day, p, 'Deep Learning', 'Dr. G. Kishor Kumar');
+          insertSlot(sec.year, sec.id, day, p, 'Deep Learning', 'Mr. V. Raghavendra');
           p += 1;
           continue;
         }
@@ -1247,6 +1339,12 @@ export function populateTimetablesData() {
     WHERE year = 2 
       AND UPPER(TRIM(subject)) NOT IN ('AI', 'ADSA', 'UHV', 'PYP', 'ADSA LAB', 'OOPJ', 'OOPJ LAB', 'PYP LAB')
   `).run();
+  db.prepare(`
+    UPDATE timetables 
+    SET faculty_name = '—' 
+    WHERE LOWER(faculty_name) LIKE '%kishor kumar%' 
+       OR (LOWER(faculty_name) LIKE '%kishor%' AND LOWER(faculty_name) NOT LIKE '%bala kishore%')
+  `).run();
 
   console.log(`✅ Populated ${trackedEntries.length} timetable slots across 13 sections with 0 clock-time conflicts!`);
 }
@@ -1255,6 +1353,103 @@ export function reseedTimetables() {
   console.log('🔄 Re-seeding timetables across all 13 sections...');
   syncSectionsAndFaculty();
   console.log('✅ Timetables successfully re-seeded!');
+}
+
+// ============================================================================
+// FACULTY & ADMIN ACTIVE SESSION MANAGEMENT
+// Enforces "One Account = One Active Login" and "Tab-Scoped Session Lifetime"
+// ============================================================================
+
+export function cleanStaleSessions(timeoutMs = 25000) {
+  try {
+    const now = Date.now();
+    const staleThreshold = now - timeoutMs;
+    const unloadThreshold = now - 4000;
+    db.prepare(`
+      DELETE FROM active_sessions 
+      WHERE last_active < ? 
+         OR (unloaded_at IS NOT NULL AND unloaded_at < ?)
+    `).run(staleThreshold, unloadThreshold);
+  } catch (err) {
+    console.error('Error cleaning stale sessions:', err);
+  }
+}
+
+export function getActiveSessionByUserId(userId, timeoutMs = 25000) {
+  cleanStaleSessions(timeoutMs);
+  const now = Date.now();
+  const staleThreshold = now - timeoutMs;
+  const unloadThreshold = now - 4000;
+  return db.prepare(`
+    SELECT * FROM active_sessions 
+    WHERE user_id = ? 
+      AND last_active >= ?
+      AND (unloaded_at IS NULL OR unloaded_at >= ?)
+    ORDER BY id DESC LIMIT 1
+  `).get(userId, staleThreshold, unloadThreshold);
+}
+
+export function getActiveSessionById(sessionId, timeoutMs = 35000) {
+  cleanStaleSessions(timeoutMs);
+  const now = Date.now();
+  const staleThreshold = now - timeoutMs;
+  return db.prepare(`
+    SELECT * FROM active_sessions 
+    WHERE session_id = ? 
+      AND last_active >= ?
+  `).get(sessionId, staleThreshold);
+}
+
+export function createActiveSession(userId, role) {
+  cleanStaleSessions();
+  db.prepare('DELETE FROM active_sessions WHERE user_id = ?').run(userId);
+  const sessionId = crypto.randomUUID();
+  const now = Date.now();
+  db.prepare(`
+    INSERT INTO active_sessions (session_id, user_id, role, last_active, unloaded_at, created_at)
+    VALUES (?, ?, ?, ?, NULL, ?)
+  `).run(sessionId, userId, role, now, now);
+  return { sessionId, userId, role, last_active: now, created_at: now };
+}
+
+export function touchSession(sessionId) {
+  try {
+    return db.prepare(`
+      UPDATE active_sessions 
+      SET last_active = ?, unloaded_at = NULL 
+      WHERE session_id = ?
+    `).run(Date.now(), sessionId);
+  } catch (e) {
+    return null;
+  }
+}
+
+export function markSessionUnloading(sessionId) {
+  try {
+    return db.prepare(`
+      UPDATE active_sessions 
+      SET unloaded_at = ? 
+      WHERE session_id = ?
+    `).run(Date.now(), sessionId);
+  } catch (e) {
+    return null;
+  }
+}
+
+export function invalidateSession(sessionId) {
+  try {
+    return db.prepare('DELETE FROM active_sessions WHERE session_id = ?').run(sessionId);
+  } catch (e) {
+    return null;
+  }
+}
+
+export function invalidateUserSessions(userId) {
+  try {
+    return db.prepare('DELETE FROM active_sessions WHERE user_id = ?').run(userId);
+  } catch (e) {
+    return null;
+  }
 }
 
 export default db;

@@ -3,24 +3,75 @@
 const API_BASE = '/api';
 
 export function getStoredToken() {
-  return localStorage.getItem('rgmcet_auth_token');
+  // 1. Check tab-scoped sessionStorage first (used by Faculty and Admin)
+  const sessionToken = sessionStorage.getItem('rgmcet_auth_token');
+  if (sessionToken) return sessionToken;
+
+  // 2. Check localStorage (permitted ONLY for student accounts)
+  const localUserStr = localStorage.getItem('rgmcet_auth_user');
+  if (localUserStr) {
+    try {
+      const localUser = JSON.parse(localUserStr);
+      if (localUser && localUser.role === 'student') {
+        return localStorage.getItem('rgmcet_auth_token');
+      }
+    } catch (e) {}
+    // If a legacy faculty or admin token was stored in localStorage, purge it
+    localStorage.removeItem('rgmcet_auth_token');
+    localStorage.removeItem('rgmcet_auth_user');
+  }
+
+  return null;
 }
 
 export function getStoredUser() {
-  const user = localStorage.getItem('rgmcet_auth_user');
-  try {
-    return user ? JSON.parse(user) : null;
-  } catch (e) {
-    return null;
+  // 1. Check tab-scoped sessionStorage first (used by Faculty and Admin)
+  const sessionUser = sessionStorage.getItem('rgmcet_auth_user');
+  if (sessionUser) {
+    try {
+      return JSON.parse(sessionUser);
+    } catch (e) {
+      return null;
+    }
   }
+
+  // 2. Check localStorage (permitted ONLY for student accounts)
+  const localUserStr = localStorage.getItem('rgmcet_auth_user');
+  if (localUserStr) {
+    try {
+      const localUser = JSON.parse(localUserStr);
+      if (localUser && localUser.role === 'student') {
+        return localUser;
+      }
+    } catch (e) {}
+    // Purge any lingering faculty or admin account from localStorage
+    localStorage.removeItem('rgmcet_auth_token');
+    localStorage.removeItem('rgmcet_auth_user');
+  }
+
+  return null;
 }
 
 export function setStoredSession(token, user) {
-  if (token) localStorage.setItem('rgmcet_auth_token', token);
-  if (user) localStorage.setItem('rgmcet_auth_user', JSON.stringify(user));
+  if (user?.role === 'faculty' || user?.role === 'admin') {
+    // Tab-scoped storage: sessionStorage only
+    if (token) sessionStorage.setItem('rgmcet_auth_token', token);
+    if (user) sessionStorage.setItem('rgmcet_auth_user', JSON.stringify(user));
+    // Ensure not persisted in localStorage
+    localStorage.removeItem('rgmcet_auth_token');
+    localStorage.removeItem('rgmcet_auth_user');
+  } else {
+    // Students retain persistent localStorage
+    if (token) localStorage.setItem('rgmcet_auth_token', token);
+    if (user) localStorage.setItem('rgmcet_auth_user', JSON.stringify(user));
+    sessionStorage.removeItem('rgmcet_auth_token');
+    sessionStorage.removeItem('rgmcet_auth_user');
+  }
 }
 
 export function clearStoredSession() {
+  sessionStorage.removeItem('rgmcet_auth_token');
+  sessionStorage.removeItem('rgmcet_auth_user');
   localStorage.removeItem('rgmcet_auth_token');
   localStorage.removeItem('rgmcet_auth_user');
 }
@@ -86,7 +137,38 @@ export const authApi = {
       method: 'POST',
       body: { reset_token, new_password, confirm_password }
     }),
-  getMe: () => apiRequest('/auth/me')
+  getMe: () => apiRequest('/auth/me'),
+  logout: () => {
+    const user = getStoredUser();
+    return apiRequest('/auth/logout', {
+      method: 'POST',
+      body: { session_id: user?.session_id }
+    }).catch(() => {});
+  },
+  sendHeartbeat: () =>
+    apiRequest('/auth/session/heartbeat', {
+      method: 'POST'
+    }),
+  sendUnload: () => {
+    const user = getStoredUser();
+    const token = getStoredToken();
+    if (!user || (user.role !== 'faculty' && user.role !== 'admin')) return;
+    const payload = JSON.stringify({ session_id: user.session_id });
+    if (navigator.sendBeacon) {
+      const blob = new Blob([payload], { type: 'application/json' });
+      navigator.sendBeacon(`${API_BASE}/auth/session/unload`, blob);
+    } else {
+      fetch(`${API_BASE}/auth/session/unload`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
+        body: payload,
+        keepalive: true
+      }).catch(() => {});
+    }
+  }
 };
 
 // Timetable endpoints

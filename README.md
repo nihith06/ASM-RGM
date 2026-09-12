@@ -59,9 +59,10 @@ Designed with a clean, professional academic aesthetic: white background, RGMCET
 
 | Role | Register / Employee ID | Password | Notes |
 |---|---|---|---|
-| **Administrator** | `ADMIN001` | `admin123` | Full administration & section management |
-| **Faculty (HOD)** | `FAC001` | `faculty123` | Dr. K. Ramesh (Prof & Dean) |
-| **Faculty** | `FAC002` | `faculty123` | Dr. S. Priya (Associate Professor) |
+| **Administrator 1** | `admin01` | `1352468` | System Administrator |
+| **Administrator 2** | `admin02` | `1352468` | Academic Administrator |
+| **Administrator 3** | `admin03` | `1352468` | Department Administrator |
+| **Faculty (All Accounts)** | `FAC001` – `FAC019` | `12345678` | 19 official AIML faculty members |
 | **Student (3rd Yr)** | `22091A3324` | `student123` | Karthik Kumar (3rd Year AIML) |
 | **Student (1st Yr)** | `24091A3301` | `student123` | Rahul Varma (1st Year AIML) |
 

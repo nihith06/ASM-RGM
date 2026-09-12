@@ -46,12 +46,15 @@ async function runTests() {
     const health = await request('/api/health');
     assert('Health check endpoint is online', health.status === 200 && health.data.status === 'online');
 
-    // 2. Admin Login
+    // Clear any active sessions before test run
+    db.prepare('DELETE FROM active_sessions').run();
+
+    // 2. Admin Login (admin01)
     const adminLogin = await request('/api/auth/login', {
       method: 'POST',
-      body: { register_id: 'ADMIN001', password: 'admin123' }
+      body: { register_id: 'admin01', password: '1352468' }
     });
-    assert('Admin login successful', adminLogin.status === 200 && adminLogin.data.token, JSON.stringify(adminLogin));
+    assert('Admin login successful (admin01)', adminLogin.status === 200 && adminLogin.data.token, JSON.stringify(adminLogin));
     const adminToken = adminLogin.data.token;
 
     // 3. Duplicate ID Rejection
@@ -59,7 +62,7 @@ async function runTests() {
       method: 'POST',
       body: {
         name: 'Imposter Admin',
-        register_id: 'ADMIN001',
+        register_id: 'admin01',
         password: 'password123',
         role: 'student',
         year: 1,
@@ -94,10 +97,10 @@ async function runTests() {
     // 5. Faculty Login
     const facLogin = await request('/api/auth/login', {
       method: 'POST',
-      body: { register_id: 'FAC001', password: 'faculty123' }
+      body: { register_id: 'FAC001', password: '12345678' }
     });
     assert('Faculty login succeeds (FAC001)', facLogin.status === 200 && facLogin.data.token);
-    const facToken = facLogin.data.token;
+    let facToken = facLogin.data.token;
 
     // 6. PRIVACY RULE TEST: Student accessing student/faculty directory must be rejected (403)!
     const studentAccessingDir = await request('/api/directory/students', { token: studentToken });
@@ -145,17 +148,29 @@ async function runTests() {
     const availRes = await request('/api/faculty/availability', { token: studentToken });
     assert('Student can view Faculty Availability matrix', availRes.status === 200 && Array.isArray(availRes.data.faculty_availability));
     
-    // Verify structure
+    // Verify HOD is strictly excluded from public availability
     const kishorFac = availRes.data.faculty_availability.find(f => f.register_id === 'FAC001');
-    assert('Faculty FAC001 (Dr. G. Kishor Kumar) has computed schedule with Monday-Saturday', kishorFac && kishorFac.schedule && kishorFac.schedule.Monday);
+    assert('HOD (FAC001) is strictly excluded from public Faculty Availability matrix', !kishorFac);
 
-    // 11. Faculty Override on a genuinely free slot (Thursday Period 2)
+    // Verify teaching faculty exists
+    const teachingFac = availRes.data.faculty_availability.find(f => f.register_id === 'FAC002');
+    assert('Teaching Faculty FAC002 (Dr. J. Avinash) has computed schedule with Monday-Saturday', teachingFac && teachingFac.schedule && teachingFac.schedule.Monday);
+
+    // Login as teaching faculty (FAC002) for override & leave tests
+    const fac2Login = await request('/api/auth/login', {
+      method: 'POST',
+      body: { register_id: 'FAC002', password: '12345678' }
+    });
+    assert('Teaching faculty login succeeds (FAC002)', fac2Login.status === 200 && fac2Login.data.token);
+    const fac2Token = fac2Login.data.token;
+
+    // 11. Faculty Override on a genuinely free slot (Thursday Period 3)
     const overrideRes = await request('/api/faculty/overrides', {
       method: 'POST',
-      token: facToken,
+      token: fac2Token,
       body: {
         day: 'Thursday',
-        period: 2,
+        period: 3,
         status: 'busy'
       }
     });
@@ -163,48 +178,24 @@ async function runTests() {
 
     // Verify the override appears in public availability
     const checkAvail = await request('/api/faculty/availability?day=Thursday', { token: studentToken });
-    const targetFac = checkAvail.data.faculty_availability.find(f => f.register_id === 'FAC001');
-    assert('Override is visible in public availability for Thursday Period 2', 
-      targetFac && targetFac.schedule.Thursday[2] && targetFac.schedule.Thursday[2].status === 'busy'
+    const targetFac = checkAvail.data.faculty_availability.find(f => f.register_id === 'FAC002');
+    assert('Override is visible in public availability for Thursday Period 3', 
+      targetFac && targetFac.schedule.Thursday[3] && targetFac.schedule.Thursday[3].status === 'busy'
     );
 
     // Clean up test override
-    await request('/api/faculty/overrides/Thursday/2', { method: 'DELETE', token: facToken });
+    await request('/api/faculty/overrides/Thursday/3', { method: 'DELETE', token: fac2Token });
 
-    // 12. Multi-Year Teaching: Verify Dr. G. Kishor Kumar (FAC001) teaches Year 1, Year 2, and Year 4 on Wednesday
+    // 12. HOD Teaching Exclusion: Verify HOD Dr. G. Kishor Kumar (FAC001) has zero teaching classes
     const kishorSchedule = await request('/api/faculty/my-schedule', { token: facToken });
-    assert('Faculty can fetch personal multi-year teaching schedule', kishorSchedule.status === 200);
-    const wedClasses = kishorSchedule.data.teaching_classes.filter(c => c.day === 'Wednesday');
-    const wedYears = new Set(wedClasses.map(c => c.year));
-    assert('Faculty FAC001 teaches multiple different years on Wednesday (1st, 2nd, and 4th Year)',
-      wedYears.has(1) && wedYears.has(2) && wedYears.has(4)
+    assert('HOD can fetch personal schedule with 0 teaching classes', 
+      kishorSchedule.status === 200 && kishorSchedule.data.teaching_classes.length === 0
     );
 
-    // 13. Clock-Time Conflict Detection:
-    // Year 1 Period 7 is 16:00 - 16:50 PM.
-    // Year 2 Period 7 is 15:30 - 16:20 PM.
-    // Attempting to assign Dr. G. Kishor Kumar to Year 2 Period 7 on Wednesday must fail with 409 Conflict due to clock time overlap (16:00 - 16:20)!
+    // Attempting to assign HOD to any subject must fail with 422 Unprocessable Entity
     const secRes = await request('/api/timetables/sections', { token: adminToken });
     const secA_Y2 = secRes.data.sections.find(s => s.year === 2 && s.name.includes('A'));
-    const conflictAttempt = await request('/api/timetables/cell', {
-      method: 'POST',
-      token: adminToken,
-      body: {
-        year: 2,
-        section_id: secA_Y2.id,
-        day: 'Wednesday',
-        period: 7,
-        subject: 'AI',
-        faculty_name: 'Dr. G. Kishor Kumar'
-      }
-    });
-    assert('Assigning overlapping clock-time slot rejected with 409 Conflict',
-      conflictAttempt.status === 409 && conflictAttempt.data.error.includes('Conflict')
-    );
-
-    // 14. Non-Conflicting Multi-Year Assignment:
-    // Wednesday Period 1 in Year 2 (09:00 - 09:50) where Dr. G. Kishor Kumar is assigned
-    const validMultiYearCell = await request('/api/timetables/cell', {
+    const hodAssignAttempt = await request('/api/timetables/cell', {
       method: 'POST',
       token: adminToken,
       body: {
@@ -214,6 +205,48 @@ async function runTests() {
         period: 1,
         subject: 'OOPJ',
         faculty_name: 'Dr. G. Kishor Kumar'
+      }
+    });
+    assert('Assigning HOD to a teaching subject rejected with 422',
+      hodAssignAttempt.status === 422
+    );
+
+    // Verify HOD is strictly excluded from Faculty Directory
+    const facDirRes = await request('/api/directory/faculty', { token: facToken });
+    assert('HOD is strictly excluded from Faculty Directory', !facDirRes.data.faculty.some(f => f.register_id === 'FAC001' || f.name.toLowerCase().includes('kishor kumar')));
+
+    // 13. Clock-Time Conflict Detection:
+    // Year 1 Period 7 is 16:00 - 16:50 PM (Mrs. C. Leelavathi teaches Year 1 Sec A Wednesday P7).
+    // Year 2 Period 7 is 15:30 - 16:20 PM.
+    // Attempting to assign Mrs. C. Leelavathi to Year 2 Period 7 on Wednesday must fail with 409 Conflict due to clock time overlap (16:00 - 16:20)!
+    const conflictAttempt = await request('/api/timetables/cell', {
+      method: 'POST',
+      token: adminToken,
+      body: {
+        year: 2,
+        section_id: secA_Y2.id,
+        day: 'Wednesday',
+        period: 7,
+        subject: 'AI',
+        faculty_name: 'Mrs. C. Leelavathi'
+      }
+    });
+    assert('Assigning overlapping clock-time slot rejected with 409 Conflict',
+      conflictAttempt.status === 409 && conflictAttempt.data.error.includes('Conflict')
+    );
+
+    // 14. Non-Conflicting Multi-Year Assignment:
+    // Wednesday Period 1 in Year 2 (09:00 - 09:50) where Mrs. B.V.S.N. Lakshmi is assigned
+    const validMultiYearCell = await request('/api/timetables/cell', {
+      method: 'POST',
+      token: adminToken,
+      body: {
+        year: 2,
+        section_id: secA_Y2.id,
+        day: 'Wednesday',
+        period: 1,
+        subject: 'OOPJ',
+        faculty_name: 'Mrs. B.V.S.N. Lakshmi'
       }
     });
     assert('Valid non-conflicting multi-year assignment succeeds with 200 OK', validMultiYearCell.status === 200);
@@ -228,7 +261,7 @@ async function runTests() {
         day: 'Wednesday',
         periods: [1, 2],
         subject: 'OOPJ',
-        faculty_name: 'Dr. G. Kishor Kumar'
+        faculty_name: 'Mrs. B.V.S.N. Lakshmi'
       }
     });
     assert('Updating merged period block [1, 2] succeeds with 200 OK', mergedCellUpdate.status === 200);
@@ -400,7 +433,7 @@ async function runTests() {
       satY3A[5]?.subject === 'SEM' && satY3A[5]?.faculty_name === '—' &&
       satY3A[7]?.subject === 'FSD' && satY3A[7]?.faculty_name === 'Mr. S. Kalim Peerulla Basha'
     );
-    assert('Year 3 Sec A: Room numbers are neglected (empty)', monY3A[1]?.room === '');
+    assert('Year 3 Sec A: Room number is ET-3080', monY3A[1]?.room === 'ET-3080');
 
     // 15F. Year 3 Section B Official Source-of-Truth Timetable Verification (Photo Source)
     const secB_Y3 = secRes.data.sections.find(s => s.year === 3 && s.name.includes('B'));
@@ -448,7 +481,7 @@ async function runTests() {
       satY3B[6]?.subject === 'FSD' && satY3B[6]?.faculty_name === 'Ms. P. Supriya' &&
       satY3B[7]?.subject === 'SEM' && satY3B[7]?.faculty_name === '—'
     );
-    assert('Year 3 Sec B: Room numbers are neglected (empty)', monY3B[1]?.room === '');
+    assert('Year 3 Sec B: Room number is ET-3050', monY3B[1]?.room === 'ET-3050');
 
     // 15G. Year 3 Section C Official Source-of-Truth Timetable Verification (Photo Source)
     const secC_Y3 = secRes.data.sections.find(s => s.year === 3 && s.name.includes('C'));
@@ -496,7 +529,7 @@ async function runTests() {
       satY3C[5]?.subject === 'SEM' && satY3C[5]?.faculty_name === '—' &&
       satY3C[6]?.subject === 'EDA' && satY3C[6]?.faculty_name === 'Dr. Chakrapani'
     );
-    assert('Year 3 Sec C: Room numbers are neglected (empty)', monY3C[1]?.room === '');
+    assert('Year 3 Sec C: Room number is ET-3070', monY3C[1]?.room === 'ET-3070');
 
     // 15H. Year 3 Section D Official Source-of-Truth Timetable Verification (Photo Source)
     const secD_Y3 = secRes.data.sections.find(s => s.year === 3 && s.name.includes('D'));
@@ -543,7 +576,7 @@ async function runTests() {
       satY3D[3]?.subject === 'SEM' && satY3D[3]?.faculty_name === '—' &&
       satY3D[5]?.subject === 'TINKERING LAB' && satY3D[5]?.faculty_name === 'Mr. S. Sunil Kumar'
     );
-    assert('Year 3 Sec D: Room numbers are neglected (empty)', monY3D[1]?.room === '');
+    assert('Year 3 Sec D: Room number is ET-3060', monY3D[1]?.room === 'ET-3060');
 
     // 15I. Exact 13 Sections and 19 Faculty Assertions
     const allSections = secRes.data.sections;
@@ -563,10 +596,14 @@ async function runTests() {
     const allFaculty = facultyDirRes.data.faculty.filter(f => f.role === 'faculty');
     const activeFaculty = allFaculty.filter(f => f.status === 'active');
     const pendingFaculty = allFaculty.filter(f => f.status === 'pending');
-    assert('Total faculty slots is exactly 19 (official RGMCET AIML members only)', allFaculty.length === 19);
-    assert('Official RGMCET active faculty count is exactly 19', activeFaculty.length === 19);
+    assert('Total faculty slots in directory is exactly 18 (HOD excluded from directory)', allFaculty.length === 18);
+    assert('Official active teaching faculty count in directory is exactly 18', activeFaculty.length === 18);
     assert('Dynamic/Pending reserved faculty slots count is strictly 0', pendingFaculty.length === 0);
     assert('Removed faculty slots FAC020 and FAC021 do not exist', !allFaculty.some(f => ['FAC020', 'FAC021'].includes(f.register_id)));
+
+    // Verify HOD is preserved in the users table in database (not deleted)
+    const dbFacultyCount = db.prepare("SELECT COUNT(*) as count FROM users WHERE role = 'faculty'").get().count;
+    assert('HOD user preserved in database: total faculty in users table is 19', dbFacultyCount === 19);
 
     // 16. First-Year Timetable & AIML-Only Faculty Assignment Verification
     const y1Timetable = await request('/api/timetables?year=1', { token: studentToken });
@@ -677,32 +714,33 @@ async function runTests() {
       checkY2Cell.data.grid.Monday[6]?.subject === 'DMGT' && checkY2Cell.data.grid.Monday[6]?.faculty_name === '—'
     );
 
-    // 17. Multi-Admin Account Login Verification (ADMIN002)
+    // 17. Multi-Admin Account Login Verification (admin02)
     const admin2Login = await request('/api/auth/login', {
       method: 'POST',
-      body: { register_id: 'ADMIN002', password: 'admin123' }
+      body: { register_id: 'admin02', password: '1352468' }
     });
-    assert('Second Admin (ADMIN002 - Vice-Principal) logs in successfully', admin2Login.status === 200 && admin2Login.data.user.role === 'admin');
+    assert('Second Admin (admin02 - Academic Admin) logs in successfully', admin2Login.status === 200 && admin2Login.data.user.role === 'admin');
     const admin2Token = admin2Login.data.token;
 
-    // 18. Multi-Admin: Creation of Additional Admin (ADMIN003)
+    // 18. Multi-Admin: Creation of Additional Admin (admin04)
     const newAdminReg = await request('/api/auth/register-admin', {
       method: 'POST',
       token: adminToken,
       body: {
         name: 'Dr. M. Vasu (Academic Admin)',
-        register_id: 'ADMIN003',
+        register_id: 'admin04',
         password: 'adminvasu123',
-        phone: '9848011222'
+        phone: '9848011223'
       }
     });
-    assert('Authorized Admin can register additional Administrator (ADMIN003)', newAdminReg.status === 201 || newAdminReg.status === 409);
+    assert('Authorized Admin can register additional Administrator (admin04)', newAdminReg.status === 201 || newAdminReg.status === 409);
 
-    const admin3Login = await request('/api/auth/login', {
+    const admin4Login = await request('/api/auth/login', {
       method: 'POST',
-      body: { register_id: 'ADMIN003', password: 'adminvasu123' }
+      body: { register_id: 'admin04', password: 'adminvasu123' }
     });
-    assert('Newly registered Admin (ADMIN003) logs in successfully', admin3Login.status === 200 && admin3Login.data.user.role === 'admin');
+    assert('Newly registered Admin (admin04) logs in successfully', admin4Login.status === 200 && admin4Login.data.user.role === 'admin');
+    db.prepare("DELETE FROM users WHERE register_id = 'admin04'").run();
 
     // Unauthenticated admin registration must fail
     const unauthAdminReg = await request('/api/auth/register-admin', {
@@ -771,10 +809,17 @@ async function runTests() {
       method: 'POST',
       body: {
         reset_token: restoreVerify.data.reset_token,
-        new_password: 'faculty123',
-        confirm_password: 'faculty123'
+        new_password: '12345678',
+        confirm_password: '12345678'
       }
     });
+
+    // Re-authenticate faculty after password restoration to update active session token
+    const facRestoredLogin = await request('/api/auth/login', {
+      method: 'POST',
+      body: { register_id: 'FAC001', password: '12345678' }
+    });
+    facToken = facRestoredLogin.data.token;
 
     // 21. Student Password Management (Faculty & Admin can reset student password)
     // Step 21a: Find student DB ID for testStudentId
@@ -827,6 +872,17 @@ async function runTests() {
     const studentAuditRes = await request('/api/directory/audit-logs', { token: studentToken });
     assert('Student viewing audit logs rejected with 403 Forbidden', studentAuditRes.status === 403);
 
+    // Student cannot clear audit logs (403)
+    const studentDeleteAuditRes = await request('/api/directory/audit-logs', { method: 'DELETE', token: studentToken });
+    assert('Student clearing audit logs rejected with 403 Forbidden', studentDeleteAuditRes.status === 403);
+
+    // Admin can clear security audit logs
+    const adminClearAuditRes = await request('/api/directory/audit-logs', { method: 'DELETE', token: adminToken });
+    assert('Admin clearing security audit logs succeeds with 200 OK', adminClearAuditRes.status === 200);
+
+    const postClearCheck = await request('/api/directory/audit-logs', { token: adminToken });
+    assert('Security audit logs empty after admin clear', postClearCheck.status === 200 && postClearCheck.data.count === 0);
+
     // 23. COMPLETE REMOVAL VERIFICATION: Dr. C. Shoba Bindu & Prof. Administrator
     const verifyFacultyList = await request('/api/directory/faculty', { token: adminToken });
     const hasShobaInFaculty = verifyFacultyList.data.faculty.some(f => /shoba/i.test(f.name));
@@ -840,15 +896,15 @@ async function runTests() {
     assert('Dr. C. Shoba Bindu completely absent from faculty availability', !hasShobaInAvail);
     assert('Prof. Administrator (HOD-AIML) completely absent from faculty availability', !hasProfAdminInAvail);
 
-    // Verify ADMIN001 is renamed to System Administrator
+    // Verify admin01 is named System Administrator
     const adminProfileCheck = await request('/api/auth/me', { token: adminToken });
-    assert('ADMIN001 is named System Administrator (not Prof. Administrator)', adminProfileCheck.data.user.name === 'System Administrator');
+    assert('admin01 is named System Administrator', adminProfileCheck.data.user.name === 'System Administrator');
 
     // 24. FACULTY LEAVE SYSTEM & GLOBAL NOTIFICATION INTIMATIONS
-    // Step 24a: Faculty FAC001 marks Leave for 2026-09-07
+    // Step 24a: Faculty FAC002 marks Leave for 2026-09-07
     const markLeaveRes = await request('/api/faculty/leaves', {
       method: 'POST',
-      token: facToken,
+      token: fac2Token,
       body: {
         date: '2026-09-07',
         status: 'leave',
@@ -859,45 +915,46 @@ async function runTests() {
     const createdLeaveId = markLeaveRes.data.leave ? markLeaveRes.data.leave.id : null;
 
     // Step 24b: Persistent leave visible in GET /api/faculty/leaves
-    const getLeavesRes = await request('/api/faculty/leaves', { token: facToken });
+    const getLeavesRes = await request('/api/faculty/leaves', { token: fac2Token });
     assert('Leave record persisted and returned in GET /api/faculty/leaves', 
       getLeavesRes.status === 200 && 
       Array.isArray(getLeavesRes.data.leaves) &&
-      getLeavesRes.data.leaves.some(l => l.date === '2026-09-07' && l.faculty_register_id === 'FAC001')
+      getLeavesRes.data.leaves.some(l => l.date === '2026-09-07' && l.faculty_register_id === 'FAC002')
     );
 
     // Step 24c: Global Notification created and visible to Student
     const studentNotifRes = await request('/api/notifications', { token: studentToken });
     assert('Student can access global notifications', studentNotifRes.status === 200 && Array.isArray(studentNotifRes.data.notifications));
     const leaveNotif = studentNotifRes.data.notifications.find(n => 
-      n.message.includes('Dr. G. Kishor Kumar') && 
+      n.message.includes('Dr. J. Avinash') && 
       n.message.includes('Leave') && 
       n.type === 'faculty_leave'
     );
     assert('Global notification box receives official faculty leave intimation', Boolean(leaveNotif));
 
-    // Step 24d: Availability reflects On Leave ONLY for FAC001 on 2026-09-07
+    // Step 24d: Availability reflects On Leave ONLY for FAC002 on 2026-09-07
     const availLeaveRes = await request('/api/faculty/availability?date=2026-09-07', { token: studentToken });
-    const fac001Avail = availLeaveRes.data.faculty_availability.find(f => f.register_id === 'FAC001');
     const fac002Avail = availLeaveRes.data.faculty_availability.find(f => f.register_id === 'FAC002');
-    assert('Faculty FAC001 is marked ON LEAVE for 2026-09-07', fac001Avail && fac001Avail.is_on_leave === true);
-    assert('Other faculty (FAC002) is NOT marked on leave', fac002Avail && !fac002Avail.is_on_leave);
+    const fac003Avail = availLeaveRes.data.faculty_availability.find(f => f.register_id === 'FAC003');
+    assert('Faculty FAC002 is marked ON LEAVE for 2026-09-07', fac002Avail && fac002Avail.is_on_leave === true);
+    assert('Other faculty (FAC003) is NOT marked on leave', fac003Avail && !fac003Avail.is_on_leave);
+    assert('HOD (FAC001) is strictly NOT in availability on leave date', !availLeaveRes.data.faculty_availability.some(f => f.register_id === 'FAC001'));
 
     // Step 24e: Timetable reflects faculty leave without altering class subject
     const ttLeaveRes = await request('/api/timetables?year=3&date=2026-09-07', { token: studentToken });
     assert('Timetable loads successfully with date query', ttLeaveRes.status === 200 && ttLeaveRes.data.grid);
     const mondaySlots = ttLeaveRes.data.grid.Monday || {};
-    const kishorClasses = Object.values(mondaySlots).filter(c => c && c.faculty_name === 'Dr. G. Kishor Kumar');
-    if (kishorClasses.length > 0) {
-      assert('Classes taught by faculty on leave have is_on_leave: true', kishorClasses.every(c => c.is_on_leave === true));
-      assert('Class subject is preserved intact when faculty is on leave', kishorClasses.every(c => c.subject && c.subject !== '—'));
+    const avinashClasses = Object.values(mondaySlots).filter(c => c && c.faculty_name === 'Dr. J. Avinash');
+    if (avinashClasses.length > 0) {
+      assert('Classes taught by faculty on leave have is_on_leave: true', avinashClasses.every(c => c.is_on_leave === true));
+      assert('Class subject is preserved intact when faculty is on leave', avinashClasses.every(c => c.subject && c.subject !== '—'));
     }
 
     // Step 24f: Clean up test leave
     if (createdLeaveId) {
       const cancelLeaveRes = await request(`/api/faculty/leaves/${createdLeaveId}`, {
         method: 'DELETE',
-        token: facToken
+        token: fac2Token
       });
       assert('Faculty can cancel/delete leave record', cancelLeaveRes.status === 200);
     }
@@ -905,7 +962,7 @@ async function runTests() {
     // 25. BUSY STATUS BEHAVIOR (Persisted, but strictly does NOT trigger leave notifications or timetable leave flags)
     const setBusyRes = await request('/api/faculty/leaves', {
       method: 'POST',
-      token: facToken,
+      token: fac2Token,
       body: {
         date: '2026-09-08',
         status: 'busy'
@@ -922,21 +979,21 @@ async function runTests() {
 
     // Verify availability reflects Busy (not On Leave)
     const availBusyRes = await request('/api/faculty/availability?date=2026-09-08', { token: studentToken });
-    const fac001Busy = availBusyRes.data.faculty_availability.find(f => f.register_id === 'FAC001');
-    assert('Faculty FAC001 availability reflects Busy', fac001Busy && fac001Busy.is_busy === true && fac001Busy.is_on_leave === false);
+    const fac002Busy = availBusyRes.data.faculty_availability.find(f => f.register_id === 'FAC002');
+    assert('Faculty FAC002 availability reflects Busy', fac002Busy && fac002Busy.is_busy === true && fac002Busy.is_on_leave === false);
 
     // Verify timetable does NOT treat Busy as Leave
     const ttBusyRes = await request('/api/timetables?year=3&date=2026-09-08', { token: studentToken });
     const tueSlots = ttBusyRes.data.grid.Tuesday || {};
-    const kishorTueClasses = Object.values(tueSlots).filter(c => c && c.faculty_name === 'Dr. G. Kishor Kumar');
-    if (kishorTueClasses.length > 0) {
-      assert('Timetable classes are NOT marked on leave when faculty is Busy', kishorTueClasses.every(c => !c.is_on_leave));
+    const avinashTueClasses = Object.values(tueSlots).filter(c => c && c.faculty_name === 'Dr. J. Avinash');
+    if (avinashTueClasses.length > 0) {
+      assert('Timetable classes are NOT marked on leave when faculty is Busy', avinashTueClasses.every(c => !c.is_on_leave));
     }
 
     // 26. ACTIVE STATUS BEHAVIOR (Returns faculty to normal availability and cleans up records)
     const setActiveRes = await request('/api/faculty/leaves', {
       method: 'POST',
-      token: facToken,
+      token: fac2Token,
       body: {
         date: '2026-09-08',
         status: 'active'
@@ -945,9 +1002,9 @@ async function runTests() {
     assert('Faculty setting Active status returns 200 OK', setActiveRes.status === 200 && setActiveRes.data.status === 'active');
 
     const availActiveRes = await request('/api/faculty/availability?date=2026-09-08', { token: studentToken });
-    const fac001Active = availActiveRes.data.faculty_availability.find(f => f.register_id === 'FAC001');
+    const fac002Active = availActiveRes.data.faculty_availability.find(f => f.register_id === 'FAC002');
     assert('Faculty availability returns to Active / normal availability (not leave, not busy)', 
-      fac001Active && !fac001Active.is_busy && !fac001Active.is_on_leave
+      fac002Active && !fac002Active.is_busy && !fac002Active.is_on_leave
     );
 
     // 27. ZERO FACULTY ASSIGNED TO SEM PERIOD (Across all 14 sections and all years)
@@ -1053,6 +1110,12 @@ async function runTests() {
     // Restore baseline timetables
     const { populateTimetablesData } = await import('./db.js');
     populateTimetablesData();
+
+    // Clean up all audit logs created during test run so audit trail remains clean
+    await request('/api/directory/audit-logs', { method: 'DELETE', token: adminToken });
+
+    // Clean up active sessions
+    db.prepare('DELETE FROM active_sessions').run();
 
     console.log(`\n📊 Verification Summary: ${passed} Passed, ${failed} Failed\n`);
     process.exit(failed > 0 ? 1 : 0);

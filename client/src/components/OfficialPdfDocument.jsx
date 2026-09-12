@@ -12,15 +12,25 @@ const DAY_ABBR = {
   Saturday: 'SAT'
 };
 
-const PERIOD_SLOTS = [
-  { period: 1, label: '09:00 - 09:50 AM' },
-  { period: 2, label: '09:50 - 10:40 AM' },
-  { period: 3, label: '11:00 - 11:50 AM' },
-  { period: 4, label: '11:50 - 12:40 PM' },
-  { period: 5, label: '01:50 - 02:40 PM' },
-  { period: 6, label: '02:40 - 03:30 PM' },
-  { period: 7, label: '03:30 - 04:20 PM' }
-];
+const YEAR_1_SLOTS = {
+  1: '09:00 - 09:50 AM',
+  2: '09:50 - 10:40 AM',
+  3: '11:00 - 11:50 AM',
+  4: '01:00 - 01:50 PM',
+  5: '01:50 - 02:40 PM',
+  6: '03:00 - 03:50 PM',
+  7: '04:00 - 04:50 PM'
+};
+
+const SENIOR_YEAR_SLOTS = {
+  1: '09:00 - 09:50 AM',
+  2: '09:50 - 10:40 AM',
+  3: '11:00 - 11:50 AM',
+  4: '11:50 - 12:40 PM',
+  5: '01:50 - 02:40 PM',
+  6: '02:40 - 03:30 PM',
+  7: '03:30 - 04:20 PM'
+};
 
 export async function exportToOfficialPdf(elementId, filename = 'Timetable.pdf') {
   const element = document.getElementById(elementId);
@@ -185,99 +195,221 @@ export default function OfficialPdfDocument({
       <div className="mb-5">
         <table className="w-full border-collapse border-2 border-slate-900 text-xs">
           <thead>
-            <tr className="bg-slate-100 text-slate-900 font-bold text-center border-b-2 border-slate-900">
-              <th className="border border-slate-900 py-2 px-2 w-16 text-[11px] font-black uppercase">
-                Day
-              </th>
+            {year === 1 ? (
+              /* Year 1 Table Header */
+              <tr className="bg-slate-100 text-slate-900 font-bold text-center border-b-2 border-slate-900">
+                <th className="border border-slate-900 py-2 px-1 w-20 text-[10px] font-black uppercase">
+                  Day / Hour & Timing
+                </th>
 
-              {/* Periods 1 & 2 */}
-              <th className="border border-slate-900 py-1.5 px-2 w-28">
-                <div className="font-bold text-[11px]">Period 1</div>
-                <div className="text-[9.5px] font-normal text-slate-600">{PERIOD_SLOTS[0].label}</div>
-              </th>
-              <th className="border border-slate-900 py-1.5 px-2 w-28">
-                <div className="font-bold text-[11px]">Period 2</div>
-                <div className="text-[9.5px] font-normal text-slate-600">{PERIOD_SLOTS[1].label}</div>
-              </th>
+                {/* Hours 1 & 2 */}
+                <th className="border border-slate-900 py-1.5 px-1 w-24">
+                  <div className="font-bold text-[11px]">Hour 1</div>
+                  <div className="text-[9px] font-normal text-slate-600">{YEAR_1_SLOTS[1]}</div>
+                </th>
+                <th className="border border-slate-900 py-1.5 px-1 w-24">
+                  <div className="font-bold text-[11px]">Hour 2</div>
+                  <div className="text-[9px] font-normal text-slate-600">{YEAR_1_SLOTS[2]}</div>
+                </th>
 
-              {/* Vertically merged BREAK Header */}
-              <th className="border border-slate-900 py-1.5 px-1 w-10 text-[10px] font-black bg-slate-200">
-                BREAK<br />
-                <span className="text-[8px] font-normal">10:40-11:00</span>
-              </th>
+                {/* Morning Break */}
+                <th className="border border-slate-900 py-1.5 px-1 w-9 text-[9.5px] font-black bg-slate-200">
+                  BREAK<br />
+                  <span className="text-[7.5px] font-normal">10:40-11:00</span>
+                </th>
 
-              {/* Periods 3 & 4 */}
-              <th className="border border-slate-900 py-1.5 px-2 w-28">
-                <div className="font-bold text-[11px]">Period 3</div>
-                <div className="text-[9.5px] font-normal text-slate-600">{PERIOD_SLOTS[2].label}</div>
-              </th>
-              <th className="border border-slate-900 py-1.5 px-2 w-28">
-                <div className="font-bold text-[11px]">Period 4</div>
-                <div className="text-[9.5px] font-normal text-slate-600">{PERIOD_SLOTS[3].label}</div>
-              </th>
+                {/* Hour 3 */}
+                <th className="border border-slate-900 py-1.5 px-1 w-24">
+                  <div className="font-bold text-[11px]">Hour 3</div>
+                  <div className="text-[9px] font-normal text-slate-600">{YEAR_1_SLOTS[3]}</div>
+                </th>
 
-              {/* Vertically merged LUNCH Header */}
-              <th className="border border-slate-900 py-1.5 px-1 w-12 text-[10px] font-black bg-slate-200">
-                LUNCH<br />
-                <span className="text-[8px] font-normal">12:40-1:50</span>
-              </th>
+                {/* Lunch Break */}
+                <th className="border border-slate-900 py-1.5 px-1 w-11 text-[9.5px] font-black bg-slate-200">
+                  LUNCH BREAK<br />
+                  <span className="text-[7.5px] font-normal">11:50-1:00</span>
+                </th>
 
-              {/* Periods 5, 6, 7 */}
-              <th className="border border-slate-900 py-1.5 px-2 w-28">
-                <div className="font-bold text-[11px]">Period 5</div>
-                <div className="text-[9.5px] font-normal text-slate-600">{PERIOD_SLOTS[4].label}</div>
-              </th>
-              <th className="border border-slate-900 py-1.5 px-2 w-28">
-                <div className="font-bold text-[11px]">Period 6</div>
-                <div className="text-[9.5px] font-normal text-slate-600">{PERIOD_SLOTS[5].label}</div>
-              </th>
-              <th className="border border-slate-900 py-1.5 px-2 w-28">
-                <div className="font-bold text-[11px]">Period 7</div>
-                <div className="text-[9.5px] font-normal text-slate-600">{PERIOD_SLOTS[6].label}</div>
-              </th>
-            </tr>
+                {/* Hours 4 & 5 */}
+                <th className="border border-slate-900 py-1.5 px-1 w-24">
+                  <div className="font-bold text-[11px]">Hour 4</div>
+                  <div className="text-[9px] font-normal text-slate-600">{YEAR_1_SLOTS[4]}</div>
+                </th>
+                <th className="border border-slate-900 py-1.5 px-1 w-24">
+                  <div className="font-bold text-[11px]">Hour 5</div>
+                  <div className="text-[9px] font-normal text-slate-600">{YEAR_1_SLOTS[5]}</div>
+                </th>
+
+                {/* Afternoon Break */}
+                <th className="border border-slate-900 py-1.5 px-1 w-9 text-[9.5px] font-black bg-slate-200">
+                  BREAK<br />
+                  <span className="text-[7.5px] font-normal">2:40-3:00</span>
+                </th>
+
+                {/* Hours 6 & 7 */}
+                <th className="border border-slate-900 py-1.5 px-1 w-24">
+                  <div className="font-bold text-[11px]">Hour 6</div>
+                  <div className="text-[9px] font-normal text-slate-600">{YEAR_1_SLOTS[6]}</div>
+                </th>
+                <th className="border border-slate-900 py-1.5 px-1 w-24">
+                  <div className="font-bold text-[11px]">Hour 7</div>
+                  <div className="text-[9px] font-normal text-slate-600">{YEAR_1_SLOTS[7]}</div>
+                </th>
+              </tr>
+            ) : (
+              /* Senior Years (2, 3, 4) Table Header */
+              <tr className="bg-slate-100 text-slate-900 font-bold text-center border-b-2 border-slate-900">
+                <th className="border border-slate-900 py-2 px-2 w-24 text-[10px] font-black uppercase">
+                  Day / Hour & Timing
+                </th>
+
+                {/* Hours 1 & 2 */}
+                <th className="border border-slate-900 py-1.5 px-2 w-28">
+                  <div className="font-bold text-[11px]">Hour 1</div>
+                  <div className="text-[9.5px] font-normal text-slate-600">{SENIOR_YEAR_SLOTS[1]}</div>
+                </th>
+                <th className="border border-slate-900 py-1.5 px-2 w-28">
+                  <div className="font-bold text-[11px]">Hour 2</div>
+                  <div className="text-[9.5px] font-normal text-slate-600">{SENIOR_YEAR_SLOTS[2]}</div>
+                </th>
+
+                {/* Vertically merged BREAK Header */}
+                <th className="border border-slate-900 py-1.5 px-1 w-10 text-[10px] font-black bg-slate-200">
+                  BREAK<br />
+                  <span className="text-[8px] font-normal">10:40-11:00</span>
+                </th>
+
+                {/* Hours 3 & 4 */}
+                <th className="border border-slate-900 py-1.5 px-2 w-28">
+                  <div className="font-bold text-[11px]">Hour 3</div>
+                  <div className="text-[9.5px] font-normal text-slate-600">{SENIOR_YEAR_SLOTS[3]}</div>
+                </th>
+                <th className="border border-slate-900 py-1.5 px-2 w-28">
+                  <div className="font-bold text-[11px]">Hour 4</div>
+                  <div className="text-[9.5px] font-normal text-slate-600">{SENIOR_YEAR_SLOTS[4]}</div>
+                </th>
+
+                {/* Vertically merged LUNCH BREAK Header */}
+                <th className="border border-slate-900 py-1.5 px-1 w-12 text-[10px] font-black bg-slate-200">
+                  LUNCH BREAK<br />
+                  <span className="text-[8px] font-normal">12:40-1:50</span>
+                </th>
+
+                {/* Hours 5, 6, 7 */}
+                <th className="border border-slate-900 py-1.5 px-2 w-28">
+                  <div className="font-bold text-[11px]">Hour 5</div>
+                  <div className="text-[9.5px] font-normal text-slate-600">{SENIOR_YEAR_SLOTS[5]}</div>
+                </th>
+                <th className="border border-slate-900 py-1.5 px-2 w-28">
+                  <div className="font-bold text-[11px]">Hour 6</div>
+                  <div className="text-[9.5px] font-normal text-slate-600">{SENIOR_YEAR_SLOTS[6]}</div>
+                </th>
+                <th className="border border-slate-900 py-1.5 px-2 w-28">
+                  <div className="font-bold text-[11px]">Hour 7</div>
+                  <div className="text-[9.5px] font-normal text-slate-600">{SENIOR_YEAR_SLOTS[7]}</div>
+                </th>
+              </tr>
+            )}
           </thead>
 
           <tbody>
-            {DAYS.map((day, dIdx) => (
-              <tr key={day} className="border-b border-slate-900 min-h-[38px]">
-                {/* Day Name */}
-                <td className="border border-slate-900 font-extrabold text-center py-2 px-1 text-[11px] bg-slate-50 uppercase">
-                  {DAY_ABBR[day]}
-                </td>
-
-                {/* Group 1: Periods 1 & 2 */}
-                {renderPdfPeriodCells(day, [1, 2])}
-
-                {/* Vertically Merged BREAK Column (Spanning all 6 rows on Monday) */}
-                {dIdx === 0 && (
-                  <td
-                    rowSpan={6}
-                    className="border border-slate-900 bg-slate-100 text-center font-black text-[11px] tracking-widest uppercase p-1 select-none align-middle"
-                    style={{ writingMode: 'vertical-rl', transform: 'rotate(180deg)' }}
-                  >
-                    B &nbsp; R &nbsp; E &nbsp; A &nbsp; K
+            {year === 1 ? (
+              /* Year 1 Table Body: 1, 2 | BREAK | 3 | LUNCH BREAK | 4, 5 | BREAK | 6, 7 */
+              DAYS.map((day, dIdx) => (
+                <tr key={day} className="border-b border-slate-900 min-h-[38px]">
+                  {/* Day Name */}
+                  <td className="border border-slate-900 font-extrabold text-center py-2 px-1 text-[11px] bg-slate-50 uppercase">
+                    {DAY_ABBR[day]}
                   </td>
-                )}
 
-                {/* Group 2: Periods 3 & 4 */}
-                {renderPdfPeriodCells(day, [3, 4])}
+                  {/* Group 1: Hours 1 & 2 */}
+                  {renderPdfPeriodCells(day, [1, 2])}
 
-                {/* Vertically Merged LUNCH Column (Spanning all 6 rows on Monday) */}
-                {dIdx === 0 && (
-                  <td
-                    rowSpan={6}
-                    className="border border-slate-900 bg-slate-100 text-center font-black text-[11px] tracking-widest uppercase p-1 select-none align-middle"
-                    style={{ writingMode: 'vertical-rl', transform: 'rotate(180deg)' }}
-                  >
-                    L &nbsp; U &nbsp; N &nbsp; C &nbsp; H &nbsp; &nbsp; B &nbsp; R &nbsp; E &nbsp; A &nbsp; K
+                  {/* Vertically Merged Morning BREAK Column */}
+                  {dIdx === 0 && (
+                    <td
+                      rowSpan={6}
+                      className="border border-slate-900 bg-slate-100 text-center font-black text-[10px] tracking-widest uppercase p-1 select-none align-middle"
+                      style={{ writingMode: 'vertical-rl', transform: 'rotate(180deg)' }}
+                    >
+                      B &nbsp; R &nbsp; E &nbsp; A &nbsp; K
+                    </td>
+                  )}
+
+                  {/* Group 2: Hour 3 */}
+                  {renderPdfPeriodCells(day, [3])}
+
+                  {/* Vertically Merged LUNCH BREAK Column */}
+                  {dIdx === 0 && (
+                    <td
+                      rowSpan={6}
+                      className="border border-slate-900 bg-slate-100 text-center font-black text-[10px] tracking-widest uppercase p-1 select-none align-middle"
+                      style={{ writingMode: 'vertical-rl', transform: 'rotate(180deg)' }}
+                    >
+                      L &nbsp; U &nbsp; N &nbsp; C &nbsp; H &nbsp; &nbsp; B &nbsp; R &nbsp; E &nbsp; A &nbsp; K
+                    </td>
+                  )}
+
+                  {/* Group 3: Hours 4 & 5 */}
+                  {renderPdfPeriodCells(day, [4, 5])}
+
+                  {/* Vertically Merged Afternoon BREAK Column */}
+                  {dIdx === 0 && (
+                    <td
+                      rowSpan={6}
+                      className="border border-slate-900 bg-slate-100 text-center font-black text-[10px] tracking-widest uppercase p-1 select-none align-middle"
+                      style={{ writingMode: 'vertical-rl', transform: 'rotate(180deg)' }}
+                    >
+                      B &nbsp; R &nbsp; E &nbsp; A &nbsp; K
+                    </td>
+                  )}
+
+                  {/* Group 4: Hours 6 & 7 */}
+                  {renderPdfPeriodCells(day, [6, 7])}
+                </tr>
+              ))
+            ) : (
+              /* Senior Years (2, 3, 4) Table Body */
+              DAYS.map((day, dIdx) => (
+                <tr key={day} className="border-b border-slate-900 min-h-[38px]">
+                  {/* Day Name */}
+                  <td className="border border-slate-900 font-extrabold text-center py-2 px-1 text-[11px] bg-slate-50 uppercase">
+                    {DAY_ABBR[day]}
                   </td>
-                )}
 
-                {/* Group 3: Periods 5, 6, 7 */}
-                {renderPdfPeriodCells(day, [5, 6, 7])}
-              </tr>
-            ))}
+                  {/* Group 1: Hours 1 & 2 */}
+                  {renderPdfPeriodCells(day, [1, 2])}
+
+                  {/* Vertically Merged BREAK Column (Spanning all 6 rows on Monday) */}
+                  {dIdx === 0 && (
+                    <td
+                      rowSpan={6}
+                      className="border border-slate-900 bg-slate-100 text-center font-black text-[11px] tracking-widest uppercase p-1 select-none align-middle"
+                      style={{ writingMode: 'vertical-rl', transform: 'rotate(180deg)' }}
+                    >
+                      B &nbsp; R &nbsp; E &nbsp; A &nbsp; K
+                    </td>
+                  )}
+
+                  {/* Group 2: Hours 3 & 4 */}
+                  {renderPdfPeriodCells(day, [3, 4])}
+
+                  {/* Vertically Merged LUNCH BREAK Column (Spanning all 6 rows on Monday) */}
+                  {dIdx === 0 && (
+                    <td
+                      rowSpan={6}
+                      className="border border-slate-900 bg-slate-100 text-center font-black text-[11px] tracking-widest uppercase p-1 select-none align-middle"
+                      style={{ writingMode: 'vertical-rl', transform: 'rotate(180deg)' }}
+                    >
+                      L &nbsp; U &nbsp; N &nbsp; C &nbsp; H &nbsp; &nbsp; B &nbsp; R &nbsp; E &nbsp; A &nbsp; K
+                    </td>
+                  )}
+
+                  {/* Group 3: Hours 5, 6, 7 */}
+                  {renderPdfPeriodCells(day, [5, 6, 7])}
+                </tr>
+              ))
+            )}
           </tbody>
         </table>
       </div>

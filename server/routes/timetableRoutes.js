@@ -1,5 +1,5 @@
 import express from 'express';
-import db, { isYear1AimlSubject, isYear2AimlSubject } from '../db.js';
+import db, { isYear1AimlSubject, isYear2AimlSubject, isHodFaculty } from '../db.js';
 import { authenticateToken, requireAdmin } from '../auth.js';
 import { checkFacultyConflict, getSlotTimeRange, timesOverlap } from '../timeUtils.js';
 import { generateSchedule } from '../services/scheduleGenerator.js';
@@ -288,6 +288,13 @@ router.post('/cell', authenticateToken, requireAdmin, (req, res) => {
     const isYear2NonAiml = yr === 2 && !isYear2AimlSubject(cleanSubject);
     const cleanFaculty = (isSem || isYear1NonAiml || isYear2NonAiml) ? '—' : (faculty_name || '').trim();
 
+    // Exclusion: Dr. G. Kishor Kumar must not be assigned or allocated any teaching subjects
+    if (cleanFaculty && cleanFaculty !== '—' && isHodFaculty(cleanFaculty)) {
+      return res.status(422).json({
+        error: 'This faculty member cannot be assigned or allocated any teaching subjects.'
+      });
+    }
+
     // Perform clock-time conflict check for each period (skip for SEM, Year 1 non-AIML, and Year 2 non-allowed since they have no faculty)
     if (!isSem && !isYear1NonAiml && !isYear2NonAiml && cleanSubject && cleanSubject !== '—' && cleanFaculty && cleanFaculty !== '—') {
       for (const p of periodList) {
@@ -361,9 +368,10 @@ router.post('/bulk-grid', authenticateToken, requireAdmin, (req, res) => {
       const isSem = sub.toUpperCase() === 'SEM';
       const isYear1NonAiml = yr === 1 && !isYear1AimlSubject(sub);
       const isYear2NonAiml = yr === 2 && !isYear2AimlSubject(sub);
-      const fac = (isSem || isYear1NonAiml || isYear2NonAiml) ? '—' : (c.faculty_name || '').trim();
+      const isHod = isHodFaculty(c.faculty_name);
+      const fac = (isSem || isYear1NonAiml || isYear2NonAiml || isHod) ? '—' : (c.faculty_name || '').trim();
 
-      if (!isSem && !isYear1NonAiml && !isYear2NonAiml && VALID_DAYS.includes(c.day) && p >= 1 && p <= 7 && sub && sub !== '—' && fac && fac !== '—') {
+      if (!isSem && !isYear1NonAiml && !isYear2NonAiml && !isHod && VALID_DAYS.includes(c.day) && p >= 1 && p <= 7 && sub && sub !== '—' && fac && fac !== '—') {
         const conflict = checkFacultyConflict(db, fac, c.day, yr, p, {
           year: yr,
           section_id: secId,
@@ -397,7 +405,8 @@ router.post('/bulk-grid', authenticateToken, requireAdmin, (req, res) => {
           const isSem = sub.toUpperCase() === 'SEM';
           const isYear1NonAiml = yr === 1 && !isYear1AimlSubject(sub);
           const isYear2NonAiml = yr === 2 && !isYear2AimlSubject(sub);
-          const fac = (isSem || isYear1NonAiml || isYear2NonAiml) ? '—' : ((c.faculty_name || '').trim() || '—');
+          const isHod = isHodFaculty(c.faculty_name);
+          const fac = (isSem || isYear1NonAiml || isYear2NonAiml || isHod) ? '—' : ((c.faculty_name || '').trim() || '—');
           stmt.run(
             yr,
             secId,
@@ -452,7 +461,8 @@ router.post('/import-csv', authenticateToken, requireAdmin, (req, res) => {
         const isSem = (subject || '').trim().toUpperCase() === 'SEM';
         const isYear1NonAiml = yr === 1 && !isYear1AimlSubject(subject);
         const isYear2NonAiml = yr === 2 && !isYear2AimlSubject(subject);
-        const faculty_name = (isSem || isYear1NonAiml || isYear2NonAiml) ? '—' : parts[3];
+        const isHod = isHodFaculty(parts[3]);
+        const faculty_name = (isSem || isYear1NonAiml || isYear2NonAiml || isHod) ? '—' : parts[3];
         const room = parts[4] || '';
 
         if (VALID_DAYS.includes(day) && period >= 1 && period <= 7) {
@@ -470,7 +480,8 @@ router.post('/import-csv', authenticateToken, requireAdmin, (req, res) => {
       const isSem = (c.subject || '').trim().toUpperCase() === 'SEM';
       const isYear1NonAiml = yr === 1 && !isYear1AimlSubject(c.subject);
       const isYear2NonAiml = yr === 2 && !isYear2AimlSubject(c.subject);
-      if (!isSem && !isYear1NonAiml && !isYear2NonAiml && c.subject && c.subject !== '—' && c.faculty_name && c.faculty_name !== '—') {
+      const isHod = isHodFaculty(c.faculty_name);
+      if (!isSem && !isYear1NonAiml && !isYear2NonAiml && !isHod && c.subject && c.subject !== '—' && c.faculty_name && c.faculty_name !== '—') {
         const conflict = checkFacultyConflict(db, c.faculty_name, c.day, yr, c.period, {
           year: yr,
           section_id: secId,

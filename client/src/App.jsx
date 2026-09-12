@@ -60,12 +60,45 @@ export default function App() {
     setCurrentTab('dashboard');
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    try {
+      await authApi.logout();
+    } catch (e) {}
     clearStoredSession();
     setUser(null);
     setToken(null);
     setCurrentTab('dashboard');
   };
+
+  // Active session heartbeat & tab lifecycle for Faculty and Admin
+  useEffect(() => {
+    if (!token || !user || (user.role !== 'faculty' && user.role !== 'admin')) {
+      return;
+    }
+
+    // Send an immediate heartbeat on mount (critical for resume after refresh)
+    authApi.sendHeartbeat().catch(() => {});
+
+    // Periodic heartbeat every 10 seconds
+    const interval = setInterval(() => {
+      authApi.sendHeartbeat().catch((err) => {
+        if (err.message && (err.message.includes('Session') || err.message.includes('401') || err.message.includes('expired'))) {
+          handleLogout();
+        }
+      });
+    }, 10000);
+
+    // Send unload signal when closing or navigating away
+    const handleBeforeUnload = () => {
+      authApi.sendUnload();
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+    };
+  }, [token, user]);
 
   const [preservedRole, setPreservedRole] = useState(() => {
     return localStorage.getItem('rgmcet_preserved_role') || 'student';
@@ -82,26 +115,6 @@ export default function App() {
       mode,
       role: activeRole
     });
-  };
-
-  const handleQuickDemoLogin = async (role) => {
-    try {
-      let regId = '22091A3324';
-      let pass = 'student123';
-      if (role === 'admin') {
-        regId = 'ADMIN001';
-        pass = 'admin123';
-      } else if (role === 'faculty') {
-        regId = 'FAC001';
-        pass = 'faculty123';
-      }
-
-      const res = await authApi.login(regId, pass, role);
-      handleAuthSuccess(res.token, res.user);
-    } catch (e) {
-      console.error('Demo login failed:', e);
-      handleOpenAuth('login', role);
-    }
   };
 
   return (
@@ -124,7 +137,6 @@ export default function App() {
             <div className="w-full min-h-[calc(100vh-80px)] bg-slate-50/75 backdrop-blur-[1px] flex flex-col justify-between">
               <LandingPage
                 onSelectRole={(role, mode = 'login') => handleOpenAuth(mode, role)}
-                onQuickDemoLogin={handleQuickDemoLogin}
               />
             </div>
           </div>

@@ -88,17 +88,7 @@ export default function AuthModal({
     if (error) setError('');
   };
 
-  const handleFillDemo = () => {
-    setMode('login');
-    if (role === 'admin') {
-      setFormData(prev => ({ ...prev, register_id: 'ADMIN001', password: 'admin123' }));
-    } else if (role === 'faculty') {
-      setFormData(prev => ({ ...prev, register_id: 'FAC001', password: 'faculty123' }));
-    } else {
-      setFormData(prev => ({ ...prev, register_id: '22091A3324', password: 'student123' }));
-    }
-    setError('');
-  };
+
 
   const handleRequestOtp = async (e) => {
     e.preventDefault();
@@ -640,12 +630,12 @@ export default function AuthModal({
                   type="text"
                   required
                   placeholder={
-                    role === 'student' ? 'e.g. 23091A3301' : 
-                    role === 'faculty' ? 'e.g. FAC001' : 'e.g. ADMIN001'
+                    role === 'student' ? 'Enter Student Register ID' : 
+                    role === 'faculty' ? 'Enter Faculty Employee ID' : 'Enter Admin Username / ID'
                   }
                   value={formData.register_id}
                   onChange={(e) => handleInputChange('register_id', e.target.value)}
-                  className="w-full pl-9 pr-3 py-2 text-sm rounded-xl border border-slate-200 focus:outline-hidden focus:border-navy-900 focus:ring-1 focus:ring-navy-900 bg-slate-50/50 font-mono uppercase"
+                  className="w-full pl-9 pr-3 py-2 text-sm rounded-xl border border-slate-200 focus:outline-hidden focus:border-navy-900 focus:ring-1 focus:ring-navy-900 bg-slate-50/50 font-mono"
                 />
               </div>
             </div>
@@ -763,48 +753,7 @@ export default function AuthModal({
               )}
             </button>
 
-            {/* Quick Demo Fill for the selected role */}
-            {mode === 'login' && (
-              <div className="pt-3 border-t border-slate-100 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
-                <span className="text-[11px] font-medium text-slate-500">
-                  Test credentials:
-                </span>
-                <div className="flex flex-wrap items-center gap-1.5">
-                  {role === 'admin' ? (
-                    <>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setFormData(prev => ({ ...prev, register_id: 'ADMIN001', password: 'admin123' }));
-                          setError('');
-                        }}
-                        className="py-1 px-2 text-[10px] font-bold bg-slate-100 hover:bg-navy-50 hover:text-navy-900 rounded-lg text-slate-600 border border-slate-200 transition-colors"
-                      >
-                        Admin 1 (HOD)
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setFormData(prev => ({ ...prev, register_id: 'ADMIN002', password: 'admin123' }));
-                          setError('');
-                        }}
-                        className="py-1 px-2 text-[10px] font-bold bg-slate-100 hover:bg-navy-50 hover:text-navy-900 rounded-lg text-slate-600 border border-slate-200 transition-colors"
-                      >
-                        Admin 2 (VP)
-                      </button>
-                    </>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={handleFillDemo}
-                      className="py-1 px-2.5 text-[11px] font-bold bg-slate-100 hover:bg-navy-50 hover:text-navy-900 rounded-lg text-slate-600 border border-slate-200 transition-colors"
-                    >
-                      Auto-Fill {roleTitle} Demo
-                    </button>
-                  )}
-                </div>
-              </div>
-            )}
+
 
           </form>
         )}

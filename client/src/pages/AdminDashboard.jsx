@@ -41,7 +41,9 @@ export default function AdminDashboard({ user }) {
   // Modals & Forms
   const [studentYearFilter, setStudentYearFilter] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
-  const [editingUser, setEditingUser] = useState(null); // for editing phone/name/year
+  const [editingUser, setEditingUser] = useState(null); // for editing phone/name/year/register_id
+  const [editError, setEditError] = useState('');
+  const [editLoading, setEditLoading] = useState(false);
   const [newSectionYear, setNewSectionYear] = useState(1);
   const [newSectionName, setNewSectionName] = useState('');
   const [isAddUserModal, setIsAddUserModal] = useState(false);
@@ -113,7 +115,8 @@ export default function AdminDashboard({ user }) {
     setLoading(true);
     try {
       const data = await directoryApi.getFaculty(searchTerm);
-      setFaculty(data.faculty || []);
+      const rawFaculty = data.faculty || [];
+      setFaculty(rawFaculty.filter(f => f.register_id !== 'FAC001' && !f.name?.toLowerCase().includes('kishor kumar') && (!f.name?.toLowerCase().includes('kishor') || f.name?.toLowerCase().includes('bala'))));
     } catch (e) {
       setError(e.message);
     } finally {
@@ -160,8 +163,11 @@ export default function AdminDashboard({ user }) {
   const handleUpdateUser = async (e) => {
     e.preventDefault();
     if (!editingUser) return;
+    setEditError('');
+    setEditLoading(true);
     try {
       await directoryApi.updateUser(editingUser.id, {
+        register_id: editingUser.register_id ? editingUser.register_id.trim().toUpperCase() : '',
         name: editingUser.name,
         phone: editingUser.phone,
         year: editingUser.year ? parseInt(editingUser.year, 10) : null,
@@ -173,9 +179,12 @@ export default function AdminDashboard({ user }) {
       setEditingUser(null);
       if (activeTab === 'students') loadStudents();
       if (activeTab === 'faculty') loadFaculty();
+      loadAuditLogs();
       setTimeout(() => setSuccess(''), 3000);
     } catch (err) {
-      setError(err.message || 'Failed to update user.');
+      setEditError(err.message || 'Failed to update user.');
+    } finally {
+      setEditLoading(false);
     }
   };
 
@@ -706,7 +715,10 @@ export default function AdminDashboard({ user }) {
                         </td>
                         <td className="py-3 px-4 text-right space-x-2">
                           <button
-                            onClick={() => setEditingUser(f)}
+                            onClick={() => {
+                              setEditError('');
+                              setEditingUser(f);
+                            }}
                             className={`text-xs font-bold ${
                               isPending
                                 ? 'text-amber-700 hover:text-amber-900 underline'
@@ -821,13 +833,42 @@ export default function AdminDashboard({ user }) {
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-navy-950/60 backdrop-blur-xs">
           <div className="bg-white w-full max-w-sm rounded-2xl p-6 shadow-2xl border border-slate-200 animate-scale-up">
             <h3 className="text-base font-bold text-navy-900 mb-1">
-              Edit User Profile
+              {editingUser.role === 'faculty' ? 'Edit Faculty Profile' : 'Edit User Profile'}
             </h3>
-            <p className="text-xs text-slate-500 mb-4">
-              ID: {editingUser.register_id} ({editingUser.role})
+            <p className="text-xs text-slate-500 mb-3">
+              {editingUser.role === 'faculty' 
+                ? 'Update official faculty profile details and Employee ID.' 
+                : `ID: ${editingUser.register_id} (${editingUser.role})`}
             </p>
 
+            {editError && (
+              <div className="p-2.5 mb-3 rounded-xl bg-red-50 border border-red-200 text-red-700 text-xs flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0" />
+                <span className="font-medium">{editError}</span>
+              </div>
+            )}
+
             <form onSubmit={handleUpdateUser} className="space-y-3">
+              {/* Employee ID Field (Editable for Faculty) */}
+              {editingUser.role === 'faculty' && (
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">
+                    Employee ID <span className="text-rose-500">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. FAC002"
+                    value={editingUser.register_id || ''}
+                    onChange={(e) => setEditingUser({ ...editingUser, register_id: e.target.value.toUpperCase() })}
+                    className="w-full text-xs p-2 rounded-lg border border-slate-300 font-mono uppercase font-bold text-navy-900 bg-slate-50 focus:bg-white focus:border-navy-900"
+                  />
+                  <p className="text-[10px] text-slate-400 mt-0.5">
+                    Official faculty identifier used across directory, workload, and login.
+                  </p>
+                </div>
+              )}
+
               <div>
                 <label className="block text-xs font-bold text-slate-700 mb-1">Full Name</label>
                 <input
@@ -908,9 +949,10 @@ export default function AdminDashboard({ user }) {
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-1.5 text-xs font-bold bg-navy-900 text-white rounded-lg hover:bg-navy-800"
+                  disabled={editLoading}
+                  className="px-4 py-1.5 text-xs font-bold bg-navy-900 text-white rounded-lg hover:bg-navy-800 disabled:opacity-50 flex items-center gap-1.5"
                 >
-                  Save Changes
+                  {editLoading ? 'Saving...' : 'Save Changes'}
                 </button>
               </div>
             </form>

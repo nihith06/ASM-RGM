@@ -56,6 +56,7 @@ export default function DirectoryView({ user }) {
   const handleOpenEditFaculty = (f) => {
     setEditingFaculty(f);
     setFacultyFormData({
+      register_id: f.register_id || '',
       name: f.name.includes('(Pending)') ? '' : f.name,
       designation: f.designation && !f.designation.includes('Pending Details') ? f.designation : 'Assistant Professor',
       qualification: f.qualification && !f.qualification.includes('Pending') ? f.qualification : '',
@@ -80,6 +81,7 @@ export default function DirectoryView({ user }) {
 
     try {
       await directoryApi.updateUser(editingFaculty.id, {
+        register_id: facultyFormData.register_id ? facultyFormData.register_id.trim().toUpperCase() : '',
         name: facultyFormData.name.trim(),
         designation: facultyFormData.designation.trim(),
         qualification: facultyFormData.qualification.trim(),
@@ -130,7 +132,8 @@ export default function DirectoryView({ user }) {
     setError('');
     try {
       const res = await directoryApi.getFaculty(searchTerm);
-      setFaculty(res.faculty || []);
+      const rawFaculty = res.faculty || [];
+      setFaculty(rawFaculty.filter(f => f.register_id !== 'FAC001' && !f.name?.toLowerCase().includes('kishor kumar') && (!f.name?.toLowerCase().includes('kishor') || f.name?.toLowerCase().includes('bala'))));
     } catch (err) {
       setError(err.message || 'Failed to load faculty directory.');
     } finally {
@@ -587,6 +590,21 @@ export default function DirectoryView({ user }) {
 
             <form onSubmit={handleFacultyProfileSubmit} className="space-y-3.5">
               <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">Employee ID *</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. FAC002"
+                  value={facultyFormData.register_id}
+                  onChange={(e) => setFacultyFormData({ ...facultyFormData, register_id: e.target.value.toUpperCase() })}
+                  className="w-full px-3 py-2 text-xs rounded-xl border border-slate-300 bg-slate-50/50 focus:bg-white focus:border-navy-900 font-mono uppercase font-bold text-navy-900"
+                />
+                <p className="text-[10px] text-slate-400 mt-0.5">
+                  Unique faculty identifier used for directory, workload, and login.
+                </p>
+              </div>
+
+              <div>
                 <label className="block text-xs font-bold text-slate-700 mb-1">Full Name *</label>
                 <input
                   type="text"
@@ -609,7 +627,6 @@ export default function DirectoryView({ user }) {
                     <option value="Assistant Professor">Assistant Professor</option>
                     <option value="Associate Professor">Associate Professor</option>
                     <option value="Professor">Professor</option>
-                    <option value="Professor & HOD">Professor & HOD</option>
                     <option value="Professor & Dean">Professor & Dean</option>
                   </select>
                 </div>

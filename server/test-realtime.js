@@ -48,7 +48,7 @@ async function runRealtimeTests() {
     // 2. Admin Login
     const adminLogin = await request('/api/auth/login', {
       method: 'POST',
-      body: { register_id: 'ADMIN001', password: 'admin123' }
+      body: { register_id: 'admin01', password: '1352468' }
     });
     assert('Admin login successful', adminLogin.status === 200 && adminLogin.data.token);
     const adminToken = adminLogin.data.token;
@@ -56,7 +56,7 @@ async function runRealtimeTests() {
     // 3. Faculty Login
     const facultyLogin = await request('/api/auth/login', {
       method: 'POST',
-      body: { register_id: 'FAC001', password: 'faculty123' }
+      body: { register_id: 'FAC001', password: '12345678' }
     });
     assert('Faculty login successful', facultyLogin.status === 200 && facultyLogin.data.token);
     const facultyToken = facultyLogin.data.token;

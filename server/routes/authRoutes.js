@@ -2,7 +2,15 @@ import express from 'express';
 import bcrypt from 'bcryptjs';
 import crypto from 'node:crypto';
 import jwt from 'jsonwebtoken';
-import db from '../db.js';
+import db, { 
+  getActiveSessionByUserId, 
+  createActiveSession, 
+  touchSession, 
+  markSessionUnloading, 
+  invalidateSession, 
+  invalidateUserSessions, 
+  cleanStaleSessions 
+} from '../db.js';
 import { generateToken, authenticateToken, requireAdmin } from '../auth.js';
 
 const router = express.Router();
@@ -94,8 +102,8 @@ router.post('/register-admin', authenticateToken, requireAdmin, (req, res) => {
       return res.status(400).json({ error: 'Name, Admin ID, and password are required.' });
     }
 
-    const cleanId = register_id.trim().toUpperCase();
-    const existing = db.prepare('SELECT id FROM users WHERE UPPER(register_id) = ?').get(cleanId);
+    const cleanId = register_id.trim();
+    const existing = db.prepare('SELECT id FROM users WHERE UPPER(register_id) = UPPER(?)').get(cleanId);
     if (existing) {
       return res.status(409).json({ error: `Admin ID "${cleanId}" is already taken.` });
     }
@@ -130,8 +138,8 @@ router.post('/login', (req, res) => {
       return res.status(400).json({ error: 'Register ID / Employee ID and password are required.' });
     }
 
-    const cleanId = register_id.trim().toUpperCase();
-    const user = db.prepare('SELECT * FROM users WHERE UPPER(register_id) = ?').get(cleanId);
+    const cleanId = register_id.trim();
+    const user = db.prepare('SELECT * FROM users WHERE UPPER(register_id) = UPPER(?)').get(cleanId);
 
     if (!user) {
       return res.status(401).json({ error: 'Invalid Register ID or password.' });
@@ -154,6 +162,19 @@ router.post('/login', (req, res) => {
       });
     }
 
+    // Single Active Login Check for Faculty & Admin
+    let activeSessionInfo = null;
+    if (user.role === 'faculty' || user.role === 'admin') {
+      cleanStaleSessions(25000);
+      const existingSession = getActiveSessionByUserId(user.id, 25000);
+      if (existingSession) {
+        return res.status(409).json({
+          error: 'This account is already logged in on another device or browser. Please log out from the existing session before signing in again.'
+        });
+      }
+      activeSessionInfo = createActiveSession(user.id, user.role);
+    }
+
     const userSafe = {
       id: user.id,
       register_id: user.register_id,
@@ -163,18 +184,79 @@ router.post('/login', (req, res) => {
       year: user.year,
       department: user.department,
       designation: user.designation,
-      status: user.status || 'active'
+      status: user.status || 'active',
+      session_id: activeSessionInfo ? activeSessionInfo.sessionId : null
     };
 
-    const token = generateToken(userSafe);
+    const token = generateToken(userSafe, activeSessionInfo ? activeSessionInfo.sessionId : null);
     return res.json({
       message: 'Login successful',
       token,
-      user: userSafe
+      user: userSafe,
+      session_id: activeSessionInfo ? activeSessionInfo.sessionId : null
     });
   } catch (error) {
     console.error('Login error:', error);
     return res.status(500).json({ error: 'Failed to process login: ' + error.message });
+  }
+});
+
+// Logout: Invalidate active session for Faculty/Admin
+router.post('/logout', (req, res) => {
+  try {
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+    if (token) {
+      try {
+        const decoded = jwt.decode(token);
+        if (decoded) {
+          if (decoded.session_id) {
+            invalidateSession(decoded.session_id);
+          } else if (decoded.id && (decoded.role === 'faculty' || decoded.role === 'admin')) {
+            invalidateUserSessions(decoded.id);
+          }
+        }
+      } catch (e) {}
+    }
+    if (req.body?.session_id) {
+      invalidateSession(req.body.session_id);
+    }
+    return res.json({ message: 'Logged out successfully' });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// Heartbeat: Keep active session alive for Faculty/Admin tabs
+router.post('/session/heartbeat', authenticateToken, (req, res) => {
+  try {
+    if (req.user && req.user.session_id) {
+      touchSession(req.user.session_id);
+    }
+    return res.json({ success: true, timestamp: Date.now() });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+// Unload: Called when tab is closing or unloading
+router.post('/session/unload', (req, res) => {
+  try {
+    let sessionId = req.body?.session_id;
+    if (!sessionId) {
+      const authHeader = req.headers['authorization'];
+      const token = authHeader && authHeader.split(' ')[1];
+      if (token) {
+        const decoded = jwt.decode(token);
+        if (decoded?.session_id) sessionId = decoded.session_id;
+      }
+    }
+    if (sessionId) {
+      markSessionUnloading(sessionId);
+    }
+    return res.json({ success: true });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
   }
 });
 
@@ -378,6 +460,9 @@ router.post('/forgot-password/reset-password', (req, res) => {
 
     // Invalidate reset token immediately
     db.prepare('DELETE FROM password_resets WHERE id = ?').run(resetRecord.id);
+
+    // Invalidate any active sessions for this user
+    invalidateUserSessions(targetUser.id);
 
     // Log action to audit_logs
     db.prepare(`

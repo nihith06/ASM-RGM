@@ -100,6 +100,15 @@ async function runSolverVerification() {
   `).all(sampleSec.year, sampleSec.id);
   assert('Section has faculty details available for PDF footer table', sampleFaculty.length > 0);
 
+  // 8. Verify HOD (Dr. G. Kishor Kumar) is NEVER assigned any subject by the automated generator
+  const hodSlots = db.prepare(`
+    SELECT COUNT(*) as count 
+    FROM timetables 
+    WHERE LOWER(faculty_name) LIKE '%kishor kumar%' 
+       OR (LOWER(faculty_name) LIKE '%kishor%' AND LOWER(faculty_name) NOT LIKE '%bala kishore%')
+  `).get();
+  assert('HOD Exclusion: Automated solver never assigns any subject to Dr. G. Kishor Kumar', hodSlots.count === 0, `Found ${hodSlots.count} slots assigned to HOD`);
+
   populateTimetablesData();
 
   console.log(`\n📊 Solver Verification Summary: ${passed} Passed, ${failed} Failed\n`);

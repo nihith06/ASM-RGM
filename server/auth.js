@@ -1,8 +1,9 @@
 import jwt from 'jsonwebtoken';
+import { getActiveSessionById, touchSession } from './db.js';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'rgmcet_aiml_academic_schedule_secret_key_2026';
 
-export function generateToken(user) {
+export function generateToken(user, sessionId = null) {
   return jwt.sign(
     {
       id: user.id,
@@ -11,7 +12,8 @@ export function generateToken(user) {
       role: user.role,
       year: user.year,
       department: user.department || 'AIML',
-      designation: user.designation
+      designation: user.designation,
+      session_id: sessionId || user.session_id || null
     },
     JWT_SECRET,
     { expiresIn: '7d' }
@@ -30,6 +32,16 @@ export function authenticateToken(req, res, next) {
     if (err) {
       return res.status(403).json({ error: 'Invalid or expired token' });
     }
+
+    // For Faculty and Admin: enforce active session validity
+    if ((user.role === 'faculty' || user.role === 'admin') && user.session_id) {
+      const activeSession = getActiveSessionById(user.session_id, 35000);
+      if (!activeSession) {
+        return res.status(401).json({ error: 'Session has expired or ended. Please sign in again.' });
+      }
+      touchSession(user.session_id);
+    }
+
     req.user = user;
     next();
   });

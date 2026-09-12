@@ -105,7 +105,8 @@ export default function FacultyAvailabilityView({ user, onNavigateToFacultyEdito
     if (!silent) setLoading(true);
     try {
       const data = await facultyApi.getAvailability(selectedDay, searchTerm, selectedDate);
-      setAvailabilityList(data.faculty_availability || []);
+      const rawList = data.faculty_availability || [];
+      setAvailabilityList(rawList.filter(f => f.register_id !== 'FAC001' && !f.name?.toLowerCase().includes('kishor kumar') && (!f.name?.toLowerCase().includes('kishor') || f.name?.toLowerCase().includes('bala'))));
     } catch (err) {
       console.error('Failed to load faculty availability:', err);
     } finally {
@@ -297,32 +298,32 @@ export default function FacultyAvailabilityView({ user, onNavigateToFacultyEdito
                 <tr className="bg-slate-100/90 border-b border-slate-200 text-[11px] font-bold text-navy-900 uppercase tracking-wider">
                   <th className="py-3.5 px-4 w-60 border-r border-slate-200">Faculty Member</th>
                   <th className="py-3.5 px-2 text-center w-28 border-r border-slate-200">
-                    <div>P1</div>
+                    <div>H1</div>
                     <div className="text-[9px] font-medium text-slate-500 normal-case">{PERIOD_TIMES[1]}</div>
                   </th>
                   <th className="py-3.5 px-2 text-center w-28 border-r border-slate-200">
-                    <div>P2</div>
+                    <div>H2</div>
                     <div className="text-[9px] font-medium text-slate-500 normal-case">{PERIOD_TIMES[2]}</div>
                   </th>
                   <th className="py-3.5 px-2 text-center w-28 border-r border-slate-200">
-                    <div>P3</div>
+                    <div>H3</div>
                     <div className="text-[9px] font-medium text-slate-500 normal-case">{PERIOD_TIMES[3]}</div>
                   </th>
                   <th className="py-3.5 px-2 text-center w-28 border-r border-slate-200">
-                    <div>P4</div>
+                    <div>H4</div>
                     <div className="text-[9px] font-medium text-slate-500 normal-case">{PERIOD_TIMES[4]}</div>
                   </th>
                   <th className="py-3.5 px-2 text-center w-28 border-r border-slate-200">
-                    <div>P5</div>
+                    <div>H5</div>
                     <div className="text-[9px] font-medium text-slate-500 normal-case">{PERIOD_TIMES[5]}</div>
                   </th>
                   <th className="py-3.5 px-2 text-center w-28 border-r border-slate-200">
-                    <div>P6</div>
+                    <div>H6</div>
                     <div className="text-[9px] font-medium text-slate-500 normal-case">{PERIOD_TIMES[6]}</div>
                   </th>
                   <th className="py-3.5 px-2 text-center w-28">
                     <div className="flex items-center justify-center gap-1">
-                      <span>P7</span>
+                      <span>H7</span>
                       <span className="text-[8px] bg-amber-400 text-navy-950 font-black px-1 rounded">to 5 PM</span>
                     </div>
                     <div className="text-[9px] font-medium text-slate-500 normal-case">{PERIOD_TIMES[7]}</div>

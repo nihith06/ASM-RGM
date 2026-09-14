@@ -2,6 +2,7 @@ import express from 'express';
 import db from '../db.js';
 import { authenticateToken } from '../auth.js';
 import { getSlotTimeRange, SENIOR_YEAR_SLOTS, YEAR_1_SLOTS, PERIOD_LABELS, formatDateHuman } from '../timeUtils.js';
+import { broadcastTimetableUpdate } from '../services/realtimeService.js';
 
 const router = express.Router();
 
@@ -508,6 +509,8 @@ router.post('/leaves', authenticateToken, (req, res) => {
       db.prepare('DELETE FROM faculty_leaves WHERE faculty_id = ? AND leave_date = ?').run(facultyUser.id, date);
       db.prepare('DELETE FROM global_notifications WHERE faculty_id = ? AND leave_date = ?').run(facultyUser.id, date);
 
+      broadcastTimetableUpdate({ action: 'leave_update', message: `Status updated to Active for ${facultyUser.name}` });
+
       return res.json({
         message: `Status updated to Active for ${facultyUser.name} on ${formattedDate}.`,
         status: 'active'
@@ -531,6 +534,8 @@ router.post('/leaves', authenticateToken, (req, res) => {
       }
       // Remove any previous leave notifications for this date if there were any
       db.prepare('DELETE FROM global_notifications WHERE faculty_id = ? AND leave_date = ?').run(facultyUser.id, date);
+
+      broadcastTimetableUpdate({ action: 'leave_update', message: `Status marked as Busy for ${facultyUser.name}` });
 
       return res.status(201).json({
         message: `Status marked as Busy for ${facultyUser.name} on ${formattedDate}.`,
@@ -567,6 +572,8 @@ router.post('/leaves', authenticateToken, (req, res) => {
     const notifInfo = notifStmt.run(facultyUser.id, facultyUser.name, date, notificationMessage);
     const notification = db.prepare('SELECT * FROM global_notifications WHERE id = ?').get(notifInfo.lastInsertRowid);
 
+    broadcastTimetableUpdate({ action: 'leave_update', message: `${facultyUser.name} marked Leave for ${formattedDate}` });
+
     return res.status(201).json({
       message: `Leave successfully marked for ${facultyUser.name} on ${formattedDate}.`,
       leave: leaveRecord,
@@ -596,6 +603,8 @@ router.delete('/leaves/:id', authenticateToken, (req, res) => {
     db.prepare('DELETE FROM faculty_leaves WHERE id = ?').run(leaveId);
     // Also remove notifications matching this leave
     db.prepare('DELETE FROM global_notifications WHERE faculty_id = ? AND leave_date = ?').run(existing.faculty_id, existing.leave_date);
+
+    broadcastTimetableUpdate({ action: 'leave_update', message: `Leave cancelled for ${existing.faculty_name}` });
 
     res.json({ message: 'Leave cancelled successfully.' });
   } catch (error) {

@@ -24,16 +24,15 @@ import {
   Eye,
   EyeOff
 } from 'lucide-react';
-import { timetableApi, directoryApi, authApi } from '../api';
+import { directoryApi, authApi } from '../api';
 import TimetableGrid from '../components/TimetableGrid';
 import FacultyAvailabilityView from '../components/FacultyAvailabilityView';
 
 export default function AdminDashboard({ user }) {
-  const [activeTab, setActiveTab] = useState('timetables'); // 'timetables' | 'students' | 'faculty' | 'sections' | 'availability' | 'audit-logs'
+  const [activeTab, setActiveTab] = useState('timetables'); // 'timetables' | 'students' | 'faculty' | 'availability' | 'audit-logs'
   const [stats, setStats] = useState(null);
   const [students, setStudents] = useState([]);
   const [faculty, setFaculty] = useState([]);
-  const [sections, setSections] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
@@ -44,8 +43,6 @@ export default function AdminDashboard({ user }) {
   const [editingUser, setEditingUser] = useState(null); // for editing phone/name/year/register_id
   const [editError, setEditError] = useState('');
   const [editLoading, setEditLoading] = useState(false);
-  const [newSectionYear, setNewSectionYear] = useState(1);
-  const [newSectionName, setNewSectionName] = useState('');
   const [isAddUserModal, setIsAddUserModal] = useState(false);
   const [newUserRole, setNewUserRole] = useState('student');
   const [newUserData, setNewUserData] = useState({
@@ -70,13 +67,11 @@ export default function AdminDashboard({ user }) {
 
   useEffect(() => {
     loadStats();
-    loadSections();
   }, []);
 
   useEffect(() => {
     if (activeTab === 'students') loadStudents();
     if (activeTab === 'faculty') loadFaculty();
-    if (activeTab === 'sections') loadSections();
     if (activeTab === 'stats') loadStats();
     if (activeTab === 'audit-logs') loadAuditLogs();
   }, [activeTab, studentYearFilter, searchTerm]);
@@ -85,15 +80,6 @@ export default function AdminDashboard({ user }) {
     try {
       const data = await directoryApi.getStats();
       setStats(data);
-    } catch (e) {
-      console.error(e);
-    }
-  };
-
-  const loadSections = async () => {
-    try {
-      const data = await timetableApi.getSections();
-      setSections(data.sections || []);
     } catch (e) {
       console.error(e);
     }
@@ -111,10 +97,39 @@ export default function AdminDashboard({ user }) {
     }
   };
 
+  // Automatic midnight reset and real-time leave updates for Manage Faculty status
+  useEffect(() => {
+    const handleLeaveUpdate = () => {
+      if (activeTab === 'faculty') loadFaculty();
+    };
+    window.addEventListener('rgmcet_notifications_updated', handleLeaveUpdate);
+    window.addEventListener('rgmcet_timetable_updated', handleLeaveUpdate);
+
+    // Calculate milliseconds until next 12:00 AM (midnight)
+    const now = new Date();
+    const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 1);
+    const msUntilMidnight = Math.max(1000, midnight.getTime() - now.getTime());
+
+    const midnightTimer = setTimeout(() => {
+      if (activeTab === 'faculty') loadFaculty();
+    }, msUntilMidnight);
+
+    return () => {
+      window.removeEventListener('rgmcet_notifications_updated', handleLeaveUpdate);
+      window.removeEventListener('rgmcet_timetable_updated', handleLeaveUpdate);
+      clearTimeout(midnightTimer);
+    };
+  }, [activeTab, searchTerm]);
+
   const loadFaculty = async () => {
     setLoading(true);
     try {
-      const data = await directoryApi.getFaculty(searchTerm);
+      const d = new Date();
+      const year = d.getFullYear();
+      const month = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      const today = `${year}-${month}-${day}`;
+      const data = await directoryApi.getFaculty(searchTerm, today);
       const rawFaculty = data.faculty || [];
       setFaculty(rawFaculty.filter(f => f.register_id !== 'FAC001' && !f.name?.toLowerCase().includes('kishor kumar') && (!f.name?.toLowerCase().includes('kishor') || f.name?.toLowerCase().includes('bala'))));
     } catch (e) {
@@ -199,34 +214,6 @@ export default function AdminDashboard({ user }) {
       setTimeout(() => setSuccess(''), 3000);
     } catch (err) {
       setError(err.message || 'Failed to delete user.');
-    }
-  };
-
-  const handleAddSection = async (e) => {
-    e.preventDefault();
-    if (!newSectionName.trim()) return;
-    try {
-      await timetableApi.addSection(newSectionYear, newSectionName.trim());
-      setSuccess(`Section "${newSectionName.trim()}" added for Year ${newSectionYear}!`);
-      setNewSectionName('');
-      loadSections();
-      loadStats();
-      setTimeout(() => setSuccess(''), 3000);
-    } catch (err) {
-      setError(err.message || 'Failed to add section.');
-    }
-  };
-
-  const handleDeleteSection = async (sectionId, sectionName, sectionYear) => {
-    if (!confirm(`Delete Section "${sectionName}" (Year ${sectionYear}) and all associated timetables?`)) return;
-    try {
-      await timetableApi.deleteSection(sectionId);
-      setSuccess(`Section "${sectionName}" deleted.`);
-      loadSections();
-      loadStats();
-      setTimeout(() => setSuccess(''), 3000);
-    } catch (err) {
-      setError(err.message || 'Failed to delete section.');
     }
   };
 
@@ -343,19 +330,7 @@ export default function AdminDashboard({ user }) {
           }`}
         >
           <Calendar className="w-4 h-4" />
-          <span>Timetable Editor & Importer</span>
-        </button>
-
-        <button
-          onClick={() => setActiveTab('sections')}
-          className={`pb-3 text-xs sm:text-sm font-bold flex items-center gap-2 transition-all border-b-2 whitespace-nowrap ${
-            activeTab === 'sections'
-              ? 'border-navy-900 text-navy-900'
-              : 'border-transparent text-slate-500 hover:text-slate-800'
-          }`}
-        >
-          <Layers className="w-4 h-4" />
-          <span>Manage Sections</span>
+          <span>Timetable</span>
         </button>
 
         <button
@@ -433,100 +408,7 @@ export default function AdminDashboard({ user }) {
         <TimetableGrid user={user} initialYear={1} />
       )}
 
-      {/* TAB 2: Manage Sections */}
-      {activeTab === 'sections' && (
-        <div className="space-y-6">
-          <div className="bg-white rounded-2xl p-6 border border-slate-200/90 shadow-academic">
-            <h2 className="text-lg font-black text-navy-900 mb-1">
-              Add & Configure Department Sections
-            </h2>
-            <p className="text-xs text-slate-500 mb-6">
-              Sections organize classes within each year of the AIML curriculum (e.g. Section A, Section B).
-            </p>
-
-            {/* Add Section Form */}
-            <form onSubmit={handleAddSection} className="flex flex-col sm:flex-row items-end gap-3 bg-slate-50 p-4 rounded-xl border border-slate-200 mb-8">
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">Select Year</label>
-                <select
-                  value={newSectionYear}
-                  onChange={(e) => setNewSectionYear(parseInt(e.target.value, 10))}
-                  className="text-xs font-bold bg-white border border-slate-300 rounded-xl px-3 py-2"
-                >
-                  <option value={1}>1st Year AIML</option>
-                  <option value={2}>2nd Year AIML</option>
-                  <option value={3}>3rd Year AIML</option>
-                  <option value={4}>4th Year AIML</option>
-                </select>
-              </div>
-
-              <div className="flex-1">
-                <label className="block text-xs font-bold text-slate-700 mb-1">Section Name</label>
-                <input
-                  type="text"
-                  required
-                  placeholder="e.g. Section C or AIML-C"
-                  value={newSectionName}
-                  onChange={(e) => setNewSectionName(e.target.value)}
-                  className="w-full text-xs font-medium bg-white border border-slate-300 rounded-xl px-3 py-2"
-                />
-              </div>
-
-              <button
-                type="submit"
-                className="px-4 py-2 text-xs font-bold bg-navy-900 text-white rounded-xl hover:bg-navy-800 shadow-xs flex items-center gap-1.5"
-              >
-                <Plus className="w-3.5 h-3.5" />
-                <span>Add Section</span>
-              </button>
-            </form>
-
-            {/* List of Sections by Year */}
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-              {[1, 2, 3, 4].map(yr => {
-                const yearSections = sections.filter(s => s.year === yr);
-                return (
-                  <div key={yr} className="border border-slate-200 rounded-xl p-4 bg-white">
-                    <div className="flex items-center justify-between pb-2 border-b border-slate-100 mb-3">
-                      <h3 className="font-bold text-xs text-navy-900">
-                        {yr}{yr === 1 ? 'st' : yr === 2 ? 'nd' : yr === 3 ? 'rd' : 'th'} Year AIML
-                      </h3>
-                      <span className="text-[10px] font-bold text-slate-400">
-                        {yearSections.length} Section{yearSections.length !== 1 ? 's' : ''}
-                      </span>
-                    </div>
-
-                    <div className="space-y-2">
-                      {yearSections.length === 0 ? (
-                        <p className="text-xs text-slate-400 italic">No sections created yet.</p>
-                      ) : (
-                        yearSections.map(s => (
-                          <div 
-                            key={s.id} 
-                            className="flex items-center justify-between p-2 rounded-lg bg-slate-50 border border-slate-200/80 text-xs font-medium"
-                          >
-                            <span className="font-bold text-slate-800">{s.name}</span>
-                            <button
-                              onClick={() => handleDeleteSection(s.id, s.name, s.year)}
-                              className="p-1 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded"
-                              title="Delete section"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
-                        ))
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-
-          </div>
-        </div>
-      )}
-
-      {/* TAB 3: Manage Students */}
+      {/* TAB 2: Manage Students */}
       {activeTab === 'students' && (
         <div className="space-y-6">
           <div className="bg-white rounded-2xl p-6 border border-slate-200/90 shadow-academic">
@@ -577,14 +459,13 @@ export default function AdminDashboard({ user }) {
                     <th className="py-2.5 px-4">Student Name</th>
                     <th className="py-2.5 px-4">Year</th>
                     <th className="py-2.5 px-4">Phone</th>
-                    <th className="py-2.5 px-4">Registered</th>
                     <th className="py-2.5 px-4 text-right">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-200">
                   {students.length === 0 ? (
                     <tr>
-                      <td colSpan="6" className="py-8 text-center text-slate-400">
+                      <td colSpan="5" className="py-8 text-center text-slate-400">
                         No students matching the criteria.
                       </td>
                     </tr>
@@ -599,9 +480,6 @@ export default function AdminDashboard({ user }) {
                           </span>
                         </td>
                         <td className="py-3 px-4 text-slate-700">{s.phone || '—'}</td>
-                        <td className="py-3 px-4 text-slate-400 text-[11px]">
-                          {s.created_at ? new Date(s.created_at).toLocaleDateString() : '—'}
-                        </td>
                         <td className="py-3 px-4 text-right space-x-2">
                           <button
                             onClick={() => {
@@ -673,17 +551,21 @@ export default function AdminDashboard({ user }) {
                   <tr className="bg-slate-100 text-[11px] font-bold text-navy-900 uppercase">
                     <th className="py-2.5 px-4">Employee ID</th>
                     <th className="py-2.5 px-4">Faculty Name</th>
-                    <th className="py-2.5 px-4">Designation</th>
                     <th className="py-2.5 px-4">Qualification</th>
                     <th className="py-2.5 px-4">Status</th>
                     <th className="py-2.5 px-4">Phone</th>
-                    <th className="py-2.5 px-4">Role</th>
                     <th className="py-2.5 px-4 text-right">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-200">
                   {faculty.map(f => {
-                    const isPending = f.status === 'pending';
+                    const isPending = f.status === 'pending' || f.daily_status === 'Pending Details';
+                    const isInactive = !isPending && (
+                      f.status === 'Inactive' || 
+                      f.status === 'inactive' || 
+                      f.daily_status === 'Inactive' || 
+                      f.is_on_leave === true
+                    );
                     return (
                       <tr key={f.id} className={isPending ? 'bg-amber-50/50 hover:bg-amber-100/50' : 'hover:bg-slate-50'}>
                         <td className="py-3 px-4 font-mono font-bold text-navy-900">{f.register_id}</td>
@@ -695,24 +577,22 @@ export default function AdminDashboard({ user }) {
                             </span>
                           )}
                         </td>
-                        <td className="py-3 px-4 text-slate-600">{f.designation || 'Faculty Member'}</td>
                         <td className="py-3 px-4 font-medium text-slate-700">{f.qualification || '—'}</td>
                         <td className="py-3 px-4">
                           <span className={`px-2 py-0.5 rounded-full font-bold text-[10px] inline-flex items-center gap-1 ${
-                            isPending ? 'bg-amber-100 text-amber-900 border border-amber-300' : 'bg-emerald-50 text-emerald-800 border border-emerald-200'
+                            isPending 
+                              ? 'bg-amber-100 text-amber-900 border border-amber-300' 
+                              : isInactive
+                              ? 'bg-red-50 text-red-800 border border-red-200'
+                              : 'bg-emerald-50 text-emerald-800 border border-emerald-200'
                           }`}>
-                            <span className={`w-1.5 h-1.5 rounded-full ${isPending ? 'bg-amber-500' : 'bg-emerald-500'}`} />
-                            {isPending ? 'Pending Details' : 'Active'}
+                            <span className={`w-1.5 h-1.5 rounded-full ${
+                              isPending ? 'bg-amber-500' : isInactive ? 'bg-red-500' : 'bg-emerald-500'
+                            }`} />
+                            {isPending ? 'Pending Details' : isInactive ? 'Inactive' : 'Active'}
                           </span>
                         </td>
                         <td className="py-3 px-4 text-slate-700">{f.phone || '—'}</td>
-                        <td className="py-3 px-4">
-                          <span className={`px-2 py-0.5 rounded font-bold text-[10px] ${
-                            f.role === 'admin' ? 'bg-amber-100 text-amber-900' : 'bg-navy-50 text-navy-900'
-                          }`}>
-                            {f.role.toUpperCase()}
-                          </span>
-                        </td>
                         <td className="py-3 px-4 text-right space-x-2">
                           <button
                             onClick={() => {

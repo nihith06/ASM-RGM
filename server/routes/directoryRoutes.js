@@ -37,11 +37,31 @@ router.get('/students', authenticateToken, requireFacultyOrAdmin, (req, res) => 
   }
 });
 
+// Helper to get local date string YYYY-MM-DD
+function getLocalDateString() {
+  const d = new Date();
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
 // GET Faculty Directory
 // PRIVACY RULE: Only logged-in Faculty members and Admin can access!
+// Status logic:
+// 1. Source of truth is the current-day saved Leave record in faculty_leaves
+// 2. Default status for all faculty: 'active' (displayed as 'Active')
+// 3. ONLY when a faculty member has saved Leave for the CURRENT DATE -> status = 'inactive' (displayed as 'Inactive')
+// 4. Busy status or other availability state does NOT cause Inactive
+// 5. Previous-day Leave does NOT carry over (automatically resets to Active on date rollover)
 router.get('/faculty', authenticateToken, requireFacultyOrAdmin, (req, res) => {
   try {
-    const { search } = req.query;
+    const { search, date: reqDate } = req.query;
+    // Determine calendar date (YYYY-MM-DD)
+    const todayStr = (reqDate && /^\d{4}-\d{2}-\d{2}$/.test(reqDate.trim())) 
+      ? reqDate.trim() 
+      : getLocalDateString();
+
     let query = `
       SELECT id, register_id, name, phone, department, designation, qualification, status, role, created_at
       FROM users
@@ -63,7 +83,44 @@ router.get('/faculty', authenticateToken, requireFacultyOrAdmin, (req, res) => {
     query += ' ORDER BY name ASC';
 
     const faculty = db.prepare(query).all(...params);
-    res.json({ count: faculty.length, faculty });
+
+    // Fetch active leaves strictly for todayStr where status = 'leave'
+    // Ignores 'busy' status and any other availability state
+    const activeLeaves = db.prepare(`
+      SELECT faculty_id, faculty_name, leave_date, status
+      FROM faculty_leaves
+      WHERE leave_date = ? AND LOWER(TRIM(status)) = 'leave'
+    `).all(todayStr);
+
+    const leaveFacultyIds = new Set(activeLeaves.map(l => String(l.faculty_id)));
+    const leaveFacultyNames = new Set(activeLeaves.map(l => (l.faculty_name || '').trim().toLowerCase()));
+
+    // Calculate daily status dynamically:
+    // - Default: 'active' (displayed as 'Active')
+    // - Saved leave today: 'inactive' (displayed as 'Inactive')
+    // - Pending reserved slot: 'pending' (displayed as 'Pending Details')
+    const facultyWithDailyStatus = faculty.map(f => {
+      const isPending = f.status === 'pending';
+      const isOnLeaveToday = !isPending && (
+        leaveFacultyIds.has(String(f.id)) ||
+        leaveFacultyIds.has(String(f.register_id)) ||
+        leaveFacultyNames.has((f.name || '').trim().toLowerCase())
+      );
+
+      const computedStatus = isPending ? 'pending' : (isOnLeaveToday ? 'inactive' : 'active');
+      const displayStatus = isPending ? 'Pending Details' : (isOnLeaveToday ? 'Inactive' : 'Active');
+
+      return {
+        ...f,
+        status: computedStatus,
+        daily_status: displayStatus,
+        display_status: displayStatus,
+        is_on_leave: isOnLeaveToday,
+        date: todayStr
+      };
+    });
+
+    res.json({ count: facultyWithDailyStatus.length, faculty: facultyWithDailyStatus, date: todayStr });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

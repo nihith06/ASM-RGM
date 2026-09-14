@@ -578,5 +578,263 @@ router.post('/generate', authenticateToken, requireAdmin, (req, res) => {
   }
 });
 
+function normalizeDayName(str) {
+  if (!str) return null;
+  const clean = str.trim().toLowerCase();
+  for (const d of VALID_DAYS) {
+    if (d.toLowerCase() === clean || clean === d.toLowerCase().slice(0, 3)) {
+      return d;
+    }
+  }
+  return null;
+}
+
+// POST validate uploaded timetable before any creation/replacement (Admin only)
+// Strictly checks ONLY the 3 specified rules:
+// 1. Day (Monday-Saturday) & Hour (1-7)
+// 2. Faculty Teaching Conflict (only actual teaching hour overlaps; ignores Busy & Leave status)
+// 3. Subject Maximum Twice Per Week
+router.post('/validate-upload', authenticateToken, requireAdmin, (req, res) => {
+  try {
+    const { year, section_id, cells } = req.body;
+    const yr = parseInt(year, 10);
+    const secId = parseInt(section_id, 10);
+
+    if (![1, 2, 3, 4].includes(yr) || !secId || !Array.isArray(cells) || cells.length === 0) {
+      return res.status(400).json({ valid: false, error: 'Valid year, section_id, and timetable cells are required.' });
+    }
+
+    const section = db.prepare('SELECT * FROM sections WHERE id = ?').get(secId);
+    if (!section) {
+      return res.status(404).json({ valid: false, error: 'Section not found.' });
+    }
+
+    // ==========================================
+    // RULE 1 — DAY & HOUR
+    // ==========================================
+    for (const c of cells) {
+      const day = normalizeDayName(c.day);
+      const period = typeof c.period === 'number' ? c.period : parseInt(c.period, 10);
+
+      if (!day || !VALID_DAYS.includes(day) || isNaN(period) || period < 1 || period > 7) {
+        return res.status(400).json({
+          valid: false,
+          error: 'Cannot create timetable. Invalid Day or Hour. Day must be Monday to Saturday and Hour must be 1 to 7.'
+        });
+      }
+    }
+
+    // ==========================================
+    // RULE 2 — FACULTY TEACHING CONFLICT
+    // ==========================================
+    // Intra-upload conflict: same faculty assigned multiple times to the same Day & Hour in uploaded file
+    const intraMap = new Map();
+    for (const c of cells) {
+      const day = normalizeDayName(c.day);
+      const period = parseInt(c.period, 10);
+      const fac = (c.faculty_name || '').trim();
+
+      if (!fac || fac === '—' || fac === '-' || fac.toLowerCase() === 'nil' || fac.toLowerCase() === 'free') {
+        continue;
+      }
+
+      const key = `${day}_${period}`;
+      if (intraMap.has(key)) {
+        const prevFac = intraMap.get(key);
+        if (prevFac.toLowerCase() === fac.toLowerCase()) {
+          const currentYearSuffix = yr === 1 ? '1st' : yr === 2 ? '2nd' : yr === 3 ? '3rd' : '4th';
+          return res.status(409).json({
+            valid: false,
+            error: `Cannot create timetable. ${fac} is already teaching on ${day} during Hour ${period} in ${currentYearSuffix} Year - ${section.name}.`
+          });
+        }
+      }
+      intraMap.set(key, fac);
+    }
+
+    // Database conflict: check if faculty is already teaching during SAME DAY and SAME HOUR in another year or section
+    for (const c of cells) {
+      const day = normalizeDayName(c.day);
+      const period = parseInt(c.period, 10);
+      const fac = (c.faculty_name || '').trim();
+
+      // If Faculty parameter is empty, skip this check for that hour
+      if (!fac || fac === '—' || fac === '-' || fac.toLowerCase() === 'nil' || fac.toLowerCase() === 'free') {
+        continue;
+      }
+
+      const candidateRange = getSlotTimeRange(yr, period);
+
+      const otherClasses = db.prepare(`
+        SELECT t.id, t.year, t.section_id, t.day, t.period, t.subject, t.faculty_name, s.name as section_name
+        FROM timetables t
+        LEFT JOIN sections s ON t.section_id = s.id
+        WHERE LOWER(TRIM(t.faculty_name)) = ?
+          AND t.day = ?
+          AND t.subject != '—'
+          AND TRIM(t.subject) != ''
+          AND NOT (t.year = ? AND t.section_id = ?)
+      `).all(fac.toLowerCase(), day, yr, secId);
+
+      for (const item of otherClasses) {
+        const isSameHour = item.period === period;
+        const existingRange = getSlotTimeRange(item.year, item.period);
+        const isTimeOverlap = candidateRange && existingRange && timesOverlap(candidateRange, existingRange);
+
+        if (isSameHour || isTimeOverlap) {
+          const conflictYearSuffix = item.year === 1 ? '1st' : item.year === 2 ? '2nd' : item.year === 3 ? '3rd' : '4th';
+          const conflictSecName = item.section_name || `Section ${item.section_id}`;
+          return res.status(409).json({
+            valid: false,
+            error: `Cannot create timetable. ${fac} is already teaching on ${day} during Hour ${item.period} in ${conflictYearSuffix} Year - ${conflictSecName}.`
+          });
+        }
+      }
+    }
+
+    // ==========================================
+    // RULE 3 — SUBJECT MAXIMUM TWICE PER WEEK
+    // ==========================================
+    const subjectCounts = new Map();
+    for (const c of cells) {
+      const sub = (c.subject || '').trim();
+      // If Subject parameter is empty, do not count it
+      if (!sub || sub === '—' || sub === '-' || sub.toLowerCase() === 'nil' || sub.toLowerCase() === 'free') {
+        continue;
+      }
+      const lowerKey = sub.toLowerCase();
+      const curr = subjectCounts.get(lowerKey);
+      if (curr) {
+        curr.count += 1;
+      } else {
+        subjectCounts.set(lowerKey, { count: 1, name: sub });
+      }
+    }
+
+    for (const [, entry] of subjectCounts.entries()) {
+      if (entry.count > 2) {
+        return res.status(409).json({
+          valid: false,
+          error: `Cannot create timetable. ${entry.name} is scheduled ${entry.count} times in this week. A subject can appear a maximum of 2 times per week.`
+        });
+      }
+    }
+
+    const validCells = cells.map(c => {
+      const d = normalizeDayName(c.day);
+      const p = parseInt(c.period, 10);
+      const rawSub = (c.subject || '').trim();
+      const rawFac = (c.faculty_name || '').trim();
+      const rawRoom = (c.room || '').trim();
+
+      const sub = (!rawSub || rawSub === '-' || rawSub.toLowerCase() === 'nil' || rawSub.toLowerCase() === 'free') ? '—' : rawSub;
+      const fac = (!rawFac || rawFac === '-' || rawFac.toLowerCase() === 'nil' || rawFac.toLowerCase() === 'free') ? '—' : rawFac;
+      const room = (!rawRoom || rawRoom === '-' || rawRoom.toLowerCase() === 'nil') ? '' : rawRoom;
+
+      return {
+        day: d,
+        period: p,
+        subject: sub,
+        faculty_name: fac,
+        room: room
+      };
+    });
+
+    return res.json({
+      valid: true,
+      count: validCells.length,
+      cells: validCells
+    });
+  } catch (error) {
+    res.status(500).json({ valid: false, error: error.message });
+  }
+});
+
+// POST replace timetable for currently selected year and section (Admin only)
+// Executed ONLY after Admin clicks "Confirm Create" following successful validation.
+router.post('/replace-section-timetable', authenticateToken, requireAdmin, (req, res) => {
+  try {
+    const { year, section_id, cells } = req.body;
+    const yr = parseInt(year, 10);
+    const secId = parseInt(section_id, 10);
+
+    if (![1, 2, 3, 4].includes(yr) || !secId || !Array.isArray(cells) || cells.length === 0) {
+      return res.status(400).json({ error: 'Valid year, section_id, and timetable cells are required.' });
+    }
+
+    const section = db.prepare('SELECT * FROM sections WHERE id = ?').get(secId);
+    if (!section) {
+      return res.status(404).json({ error: 'Section not found.' });
+    }
+
+    const yearSuffix = yr === 1 ? '1st' : yr === 2 ? '2nd' : yr === 3 ? '3rd' : '4th';
+
+    const insertStmt = db.prepare(`
+      INSERT INTO timetables (year, section_id, day, period, subject, faculty_name, room)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    db.exec('BEGIN TRANSACTION;');
+    try {
+      // 1. Delete existing timetable strictly for this year and section
+      db.prepare('DELETE FROM timetables WHERE year = ? AND section_id = ?').run(yr, secId);
+
+      // Create map of uploaded cells
+      const cellMap = new Map();
+      for (const c of cells) {
+        const d = normalizeDayName(c.day);
+        const p = parseInt(c.period, 10);
+        if (VALID_DAYS.includes(d) && p >= 1 && p <= 7) {
+          const rawSub = (c.subject || '').trim();
+          const rawFac = (c.faculty_name || '').trim();
+          const rawRoom = (c.room || '').trim();
+
+          const sub = (!rawSub || rawSub === '-' || rawSub.toLowerCase() === 'nil' || rawSub.toLowerCase() === 'free') ? '—' : rawSub;
+          const fac = (!rawFac || rawFac === '-' || rawFac.toLowerCase() === 'nil' || rawFac.toLowerCase() === 'free') ? '—' : rawFac;
+          const room = (!rawRoom || rawRoom === '-' || rawRoom.toLowerCase() === 'nil') ? '' : rawRoom;
+
+          cellMap.set(`${d}_${p}`, { sub, fac, room });
+        }
+      }
+
+      // 2. Insert slots for all valid days and periods 1-7
+      for (const d of VALID_DAYS) {
+        for (let p = 1; p <= 7; p++) {
+          const key = `${d}_${p}`;
+          const slot = cellMap.get(key) || { sub: '—', fac: '—', room: '' };
+          insertStmt.run(yr, secId, d, p, slot.sub, slot.fac, slot.room);
+        }
+      }
+
+      db.exec('COMMIT;');
+
+      // 3. Notify and audit log
+      notifyTimetableUpdate(yr, secId, `Admin uploaded and replaced timetable for ${yearSuffix} Year - ${section.name}.`);
+
+      try {
+        db.prepare(`
+          INSERT INTO audit_logs (action, performed_by_id, details)
+          VALUES (?, ?, ?)
+        `).run(
+          'UPLOAD_TIMETABLE',
+          req.user.id,
+          `Uploaded and replaced timetable for ${yearSuffix} Year - ${section.name} (${cells.length} slots).`
+        );
+      } catch (e) {}
+
+      res.json({
+        success: true,
+        message: `Timetable for ${yearSuffix} Year - ${section.name} successfully updated!`,
+        count: cells.length
+      });
+    } catch (e) {
+      db.exec('ROLLBACK;');
+      throw e;
+    }
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 export default router;
 

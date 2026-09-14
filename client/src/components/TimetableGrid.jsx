@@ -5,21 +5,21 @@ import {
   Layers, 
   Plus, 
   Edit3, 
-  FileSpreadsheet, 
   Printer, 
   Download, 
   Check, 
   X, 
   AlertCircle,
-  Sparkles,
   BookOpen,
   User,
   Trash2,
-  Wand2,
-  Loader2
+  Loader2,
+  Upload,
+  FileText
 } from 'lucide-react';
 import { timetableApi, directoryApi } from '../api';
 import OfficialPdfDocument, { exportToOfficialPdf } from './OfficialPdfDocument';
+import { parseTimetableContent } from '../timetableParser';
 
 const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
@@ -63,6 +63,8 @@ export const isYear2AimlSubject = (subject) => {
   const s = subject.trim().toUpperCase();
   return s === 'AI' || s === 'ADSA' || s === 'ADSA LAB' || s === 'UHV' || s === 'PYP' || s === 'PYP LAB' || s === 'OOPJ' || s === 'OOPJ LAB';
 };
+import { getNextSectionName } from '../sectionUtils';
+export { getNextSectionName };
 
 export default function TimetableGrid({ user, initialYear = 3, hideControls = false, initialDate = null }) {
   const [selectedYear, setSelectedYear] = useState(initialYear);
@@ -83,18 +85,24 @@ export default function TimetableGrid({ user, initialYear = 3, hideControls = fa
 
   // Admin Modals & Edit States
   const [editingCell, setEditingCell] = useState(null); // { day, period, subject, faculty_name, room }
-  const [isCsvModalOpen, setIsCsvModalOpen] = useState(false);
-  const [csvContent, setCsvContent] = useState('');
   const [isAddSectionOpen, setIsAddSectionOpen] = useState(false);
-  const [newSectionName, setNewSectionName] = useState('');
+  const [proposedSectionName, setProposedSectionName] = useState('');
+  const [deleteConfirmState, setDeleteConfirmState] = useState(null); // null | { sectionId, sectionName, step: 1 | 2 }
+  
+  // Upload Timetable States
+  const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
+  const [uploadFile, setUploadFile] = useState(null);
+  const [uploadedCells, setUploadedCells] = useState(null);
+  const [validationResult, setValidationResult] = useState(null);
+  const [uploadLoading, setUploadLoading] = useState(false);
+  const [uploadError, setUploadError] = useState('');
+  const [isConfirmReplaceOpen, setIsConfirmReplaceOpen] = useState(false);
+  const [replaceLoading, setReplaceLoading] = useState(false);
+  const fileInputRef = useRef(null);
 
-  // Automated Generator & PDF Export States
+  // PDF Export States
   const [facultyDetails, setFacultyDetails] = useState([]);
   const [pdfLoading, setPdfLoading] = useState(false);
-  const [isGenerateModalOpen, setIsGenerateModalOpen] = useState(false);
-  const [generateScope, setGenerateScope] = useState('section'); // 'section' | 'all'
-  const [generateLoading, setGenerateLoading] = useState(false);
-  const [generateResult, setGenerateResult] = useState(null);
 
   // Faculty list for dropdown suggestions (if admin)
   const [facultySuggestions, setFacultySuggestions] = useState([]);
@@ -200,26 +208,6 @@ export default function TimetableGrid({ user, initialYear = 3, hideControls = fa
     }
   };
 
-  const handleRunGenerator = async () => {
-    setGenerateLoading(true);
-    setError('');
-    setGenerateResult(null);
-    try {
-      const payload = generateScope === 'all'
-        ? { all_sections: true }
-        : { section_id: selectedSectionId, year: selectedYear };
-      const res = await timetableApi.generateTimetable(payload);
-      setGenerateResult(res);
-      setSuccess(res.message || 'Timetable generated successfully with zero conflicts!');
-      loadTimetable(selectedYear, selectedSectionId);
-      setTimeout(() => setSuccess(''), 4500);
-    } catch (err) {
-      setError(err.message || 'Constraint satisfaction generator failed.');
-    } finally {
-      setGenerateLoading(false);
-    }
-  };
-
   const handleCellSave = async (e) => {
     e.preventDefault();
     if (!isAdmin || !editingCell) return;
@@ -285,98 +273,166 @@ export default function TimetableGrid({ user, initialYear = 3, hideControls = fa
   };
 
 
-  const handleAddSection = async (e) => {
-    e.preventDefault();
-    if (!newSectionName.trim()) return;
+  const handleOpenAddSection = () => {
+    const nextName = getNextSectionName(sections);
+    setProposedSectionName(nextName);
+    setIsAddSectionOpen(true);
+  };
+
+  const handleConfirmAddSection = async () => {
+    if (!proposedSectionName) return;
 
     try {
-      const res = await timetableApi.addSection(selectedYear, newSectionName.trim());
-      setSuccess(`Section "${newSectionName.trim()}" added to Year ${selectedYear}!`);
-      setNewSectionName('');
+      const res = await timetableApi.addSection(selectedYear, proposedSectionName);
+      setSuccess(`Section "${proposedSectionName}" added to Year ${selectedYear}!`);
       setIsAddSectionOpen(false);
+      setProposedSectionName('');
       // Reload timetable
       loadTimetable(selectedYear, res.section.id);
+      setTimeout(() => setSuccess(''), 3000);
     } catch (err) {
       setError(err.message || 'Failed to add section.');
     }
   };
 
-  const handleDeleteSection = async (sectionId) => {
-    if (!confirm('Are you sure you want to delete this section and all its timetable entries?')) return;
+  const handleDeleteSectionClick = () => {
+    const sec = sections.find(s => s.id === selectedSectionId);
+    if (!sec) return;
+    setDeleteConfirmState({
+      sectionId: sec.id,
+      sectionName: sec.name,
+      step: 1
+    });
+  };
+
+  const handleContinueDelete = () => {
+    setDeleteConfirmState(prev => (prev ? { ...prev, step: 2 } : null));
+  };
+
+  const handleCancelDelete = () => {
+    setDeleteConfirmState(null);
+  };
+
+  const handleFinalConfirmDelete = async () => {
+    if (!deleteConfirmState) return;
+    const { sectionId, sectionName } = deleteConfirmState;
     try {
       await timetableApi.deleteSection(sectionId);
-      setSuccess('Section deleted successfully.');
+      setDeleteConfirmState(null);
+      setSuccess(`Section "${sectionName}" deleted successfully.`);
       loadTimetable(selectedYear, null);
+      setTimeout(() => setSuccess(''), 3000);
     } catch (err) {
       setError(err.message || 'Failed to delete section.');
+      setDeleteConfirmState(null);
     }
-  };
-
-  const handleImportCsv = async (e) => {
-    e.preventDefault();
-    if (!csvContent.trim()) return;
-
-    try {
-      const res = await timetableApi.importCsv(selectedYear, selectedSectionId, csvContent);
-      setSuccess(res.message || 'CSV imported successfully!');
-      setIsCsvModalOpen(false);
-      setCsvContent('');
-      loadTimetable(selectedYear, selectedSectionId);
-    } catch (err) {
-      setError(err.message || 'CSV import failed.');
-    }
-  };
-
-  const handleDownloadTemplate = () => {
-    const header = 'Day,Period,Subject,Faculty\n';
-    let sampleRows;
-    if (selectedYear === 1) {
-      sampleRows = [
-        'Monday,1,BEE - A,—',
-        'Monday,2,BEE - A,—',
-        'Monday,3,IP,Dr. Chakrapani',
-        'Monday,4,EP,—',
-        'Monday,5,ITWS,—',
-        'Tuesday,1,IP,Dr. Chakrapani',
-        'Tuesday,2,IP,Dr. Chakrapani'
-      ].join('\n');
-    } else if (selectedYear === 2) {
-      sampleRows = [
-        'Monday,1,PYP,Mr. N. Bala Kishore',
-        'Monday,2,PYP,Mr. N. Bala Kishore',
-        'Monday,3,OOPJ LAB,Mrs. B.V.S.N. Lakshmi',
-        'Monday,4,OOPJ LAB,Mrs. B.V.S.N. Lakshmi',
-        'Monday,5,SEM,—',
-        'Monday,6,DMGT,—',
-        'Monday,7,DMGT,—',
-        'Tuesday,1,TRAINING PROGRAM,—',
-        'Tuesday,6,ADSA,Dr. J. Avinash'
-      ].join('\n');
-    } else {
-      sampleRows = [
-        'Monday,1,NLP,Prof. M. Suresh',
-        'Monday,2,NLP,Prof. M. Suresh',
-        'Monday,3,QT&A,Prof. T. Rajesh',
-        'Monday,4,QT&A,Prof. T. Rajesh',
-        'Monday,5,SEM,—',
-        'Monday,6,SSP,Dr. S. Priya',
-        'Monday,7,SSP,Dr. S. Priya',
-        'Tuesday,1,CV&IP,Dr. S. Priya',
-        'Tuesday,2,CV&IP,Dr. S. Priya'
-      ].join('\n');
-    }
-
-    const blob = new Blob([header + sampleRows], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.setAttribute('download', `RGMCET_AIML_Year${selectedYear}_Timetable_Template.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
   };
 
   const activeSection = sections.find(s => s.id === selectedSectionId);
+
+  // Upload Timetable Handlers
+  const handleOpenUploadModal = () => {
+    setUploadFile(null);
+    setUploadedCells(null);
+    setValidationResult(null);
+    setUploadError('');
+    setIsConfirmReplaceOpen(false);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+    setIsUploadModalOpen(true);
+  };
+
+  const handleCancelUpload = () => {
+    setIsUploadModalOpen(false);
+    setUploadFile(null);
+    setUploadedCells(null);
+    setValidationResult(null);
+    setUploadError('');
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const handleFileSelect = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setUploadFile(file);
+    setUploadLoading(true);
+    setUploadError('');
+    setValidationResult(null);
+
+    try {
+      const text = await file.text();
+      const parsed = parseTimetableContent(text, file.name);
+
+      if (!activeSection) {
+        throw new Error('Please select a section before uploading a timetable.');
+      }
+
+      // Validate against backend without modifying anything in database
+      const res = await timetableApi.validateUpload({
+        year: selectedYear,
+        section_id: activeSection.id,
+        cells: parsed
+      });
+
+      if (res.valid) {
+        setUploadedCells(res.cells || parsed);
+        setValidationResult(res);
+        setUploadError('');
+      } else {
+        setValidationResult({ valid: false });
+        setUploadError(res.error || 'Timetable validation failed.');
+      }
+    } catch (err) {
+      setValidationResult({ valid: false });
+      setUploadError(err.message || 'Failed to read or validate timetable file.');
+    } finally {
+      setUploadLoading(false);
+    }
+  };
+
+  const handleProceedToConfirm = () => {
+    if (!validationResult || !validationResult.valid || !uploadedCells) return;
+    setIsUploadModalOpen(false);
+    setIsConfirmReplaceOpen(true);
+  };
+
+  const handleCancelConfirm = () => {
+    setIsConfirmReplaceOpen(false);
+    setUploadFile(null);
+    setUploadedCells(null);
+    setValidationResult(null);
+    setUploadError('');
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const handleExecuteReplace = async () => {
+    if (!activeSection || !uploadedCells) return;
+
+    setReplaceLoading(true);
+    try {
+      const res = await timetableApi.replaceSectionTimetable({
+        year: selectedYear,
+        section_id: activeSection.id,
+        cells: uploadedCells
+      });
+
+      const yearSuffix = selectedYear === 1 ? '1st' : selectedYear === 2 ? '2nd' : selectedYear === 3 ? '3rd' : '4th';
+      setSuccess(res.message || `Timetable for ${yearSuffix} Year - ${activeSection.name} successfully updated!`);
+      setIsConfirmReplaceOpen(false);
+      setUploadFile(null);
+      setUploadedCells(null);
+      setValidationResult(null);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+
+      // Reload timetable for current section
+      await loadTimetable(selectedYear, activeSection.id);
+      setTimeout(() => setSuccess(''), 4000);
+    } catch (err) {
+      setError(err.message || 'Failed to replace timetable.');
+    } finally {
+      setReplaceLoading(false);
+    }
+  };
 
   // Helper to render consecutive period cells, merging adjacent periods with identical subjects
   // CRITICAL: Merging is strictly confined within periodList so it never merges across breaks!
@@ -491,7 +547,7 @@ export default function TimetableGrid({ user, initialYear = 3, hideControls = fa
                 {/* Admin: Delete Section */}
                 {isAdmin && sections.length > 1 && (
                   <button
-                    onClick={() => handleDeleteSection(selectedSectionId)}
+                    onClick={handleDeleteSectionClick}
                     title="Delete this section"
                     className="p-1.5 rounded-lg text-slate-400 hover:text-red-600 hover:bg-red-50 border border-slate-200"
                   >
@@ -505,26 +561,18 @@ export default function TimetableGrid({ user, initialYear = 3, hideControls = fa
             {isAdmin && (
               <div className="flex items-end gap-2 pt-5 sm:pt-0">
                 <button
-                  onClick={() => { setIsGenerateModalOpen(true); setGenerateResult(null); }}
-                  className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-amber-950 bg-amber-400 hover:bg-amber-300 border border-amber-500/40 rounded-xl transition-all shadow-xs"
-                  title="Run automated constraint-satisfaction generator"
-                >
-                  <Wand2 className="w-3.5 h-3.5 text-navy-950" />
-                  <span>Generate Schedule</span>
-                </button>
-                <button
-                  onClick={() => setIsAddSectionOpen(true)}
+                  onClick={handleOpenAddSection}
                   className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-navy-900 bg-navy-50 hover:bg-navy-100 border border-navy-200 rounded-xl transition-colors"
                 >
                   <Plus className="w-3.5 h-3.5" />
                   <span>Add Section</span>
                 </button>
                 <button
-                  onClick={() => setIsCsvModalOpen(true)}
-                  className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-slate-700 bg-white hover:bg-slate-50 border border-slate-200 rounded-xl transition-colors"
+                  onClick={handleOpenUploadModal}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-navy-900 bg-navy-50 hover:bg-navy-100 border border-navy-200 rounded-xl transition-colors"
                 >
-                  <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
-                  <span>Upload CSV</span>
+                  <Upload className="w-3.5 h-3.5" />
+                  <span>Upload Timetable</span>
                 </button>
               </div>
             )}
@@ -1000,159 +1048,26 @@ export default function TimetableGrid({ user, initialYear = 3, hideControls = fa
         </div>
       )}
 
-      {/* Admin Add Section Modal */}
+      {/* Admin Add Section Confirmation Modal (Single Confirmation) */}
       {isAddSectionOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-navy-950/60 backdrop-blur-xs">
           <div className="bg-white w-full max-w-sm rounded-2xl p-6 shadow-2xl border border-slate-200 animate-scale-up">
-            <h3 className="text-base font-bold text-navy-900 mb-1">
-              Add New Section
-            </h3>
-            <p className="text-xs text-slate-500 mb-4">
-              Create a new section for Year {selectedYear} AIML.
-            </p>
-
-            <form onSubmit={handleAddSection} className="space-y-4">
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">
-                  Section Name
-                </label>
-                <input
-                  type="text"
-                  required
-                  placeholder="e.g. Section C or AIML-C"
-                  value={newSectionName}
-                  onChange={(e) => setNewSectionName(e.target.value)}
-                  className="w-full px-3 py-2 text-sm rounded-xl border border-slate-200 focus:outline-hidden focus:border-navy-900"
-                />
-              </div>
-
-              <div className="flex items-center justify-end gap-2 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setIsAddSectionOpen(false)}
-                  className="px-3 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 rounded-xl"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="px-4 py-2 text-xs font-bold bg-navy-900 text-white rounded-xl hover:bg-navy-800"
-                >
-                  Create Section
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* Admin CSV Upload / Template Modal */}
-      {isCsvModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-navy-950/60 backdrop-blur-xs">
-          <div className="bg-white w-full max-w-xl rounded-2xl p-6 shadow-2xl border border-slate-200 animate-scale-up">
             <div className="flex items-center justify-between pb-3 border-b border-slate-100 mb-4">
-              <div>
-                <h3 className="text-base font-bold text-navy-900">
-                  Bulk Timetable CSV Upload
-                </h3>
-                <p className="text-xs text-slate-500">
-                  Target: Year {selectedYear} AIML · {activeSection ? activeSection.name : 'Section'}
-                </p>
-              </div>
-              <button 
-                onClick={() => setIsCsvModalOpen(false)}
-                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <div className="mb-4 flex items-center justify-between bg-slate-50 p-3 rounded-xl border border-slate-200">
-              <span className="text-xs text-slate-600">
-                Format: <code className="text-navy-900 font-bold font-mono">Day,Period,Subject,Faculty</code>
-              </span>
-              <button
-                type="button"
-                onClick={handleDownloadTemplate}
-                className="inline-flex items-center gap-1.5 text-xs font-bold text-navy-900 hover:underline"
-              >
-                <Download className="w-3.5 h-3.5" />
-                <span>Download Sample CSV</span>
-              </button>
-            </div>
-
-            <form onSubmit={handleImportCsv} className="space-y-4">
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">
-                  Paste CSV Text or Upload File
-                </label>
-                <textarea
-                  rows={8}
-                  required
-                  placeholder={`Day,Period,Subject,Faculty\nMonday,1,BEE - A,Dr. B. Anitha\nMonday,2,IP,Dr. K. Ramesh`}
-                  value={csvContent}
-                  onChange={(e) => setCsvContent(e.target.value)}
-                  className="w-full p-3 font-mono text-xs rounded-xl border border-slate-200 focus:outline-hidden focus:border-navy-900"
-                />
-              </div>
-
-              {/* File upload input as alternative */}
-              <div>
-                <input
-                  type="file"
-                  accept=".csv,text/csv"
-                  onChange={(e) => {
-                    const file = e.target.files[0];
-                    if (file) {
-                      const reader = new FileReader();
-                      reader.onload = (evt) => setCsvContent(evt.target.result);
-                      reader.readAsText(file);
-                    }
-                  }}
-                  className="text-xs text-slate-600 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-bold file:bg-navy-50 file:text-navy-900 hover:file:bg-navy-100"
-                />
-              </div>
-
-              <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
-                <button
-                  type="button"
-                  onClick={() => setIsCsvModalOpen(false)}
-                  className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 rounded-xl"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="px-5 py-2 text-xs font-bold bg-navy-900 text-white rounded-xl hover:bg-navy-800 shadow-xs"
-                >
-                  Import Timetable
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* Admin Automated Generation Modal */}
-      {isGenerateModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-navy-950/60 backdrop-blur-xs">
-          <div className="bg-white w-full max-w-lg rounded-2xl p-6 shadow-2xl border border-slate-200 animate-scale-up">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-100 mb-4">
-              <div className="flex items-center gap-2.5">
-                <div className="w-8 h-8 rounded-xl bg-amber-100 flex items-center justify-center text-amber-900 font-bold">
-                  <Wand2 className="w-4 h-4" />
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-xl bg-navy-50 flex items-center justify-center text-navy-900 font-bold">
+                  <Plus className="w-4 h-4" />
                 </div>
                 <div>
                   <h3 className="text-base font-bold text-navy-900">
-                    Automated Timetable Generation Engine
+                    Add Section
                   </h3>
                   <p className="text-xs text-slate-500">
-                    Constraint Satisfaction Solver · Department of CSE (AI & ML)
+                    Year {selectedYear} AIML
                   </p>
                 </div>
               </div>
               <button 
-                onClick={() => setIsGenerateModalOpen(false)}
+                onClick={() => setIsAddSectionOpen(false)}
                 className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100"
               >
                 <X className="w-5 h-5" />
@@ -1160,107 +1075,324 @@ export default function TimetableGrid({ user, initialYear = 3, hideControls = fa
             </div>
 
             <div className="space-y-4">
-              {/* Enforced Rules Banner */}
-              <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200 text-xs space-y-1.5">
-                <div className="font-extrabold text-navy-950 flex items-center gap-1.5">
-                  <Sparkles className="w-3.5 h-3.5 text-amber-600" />
-                  <span>Simultaneously Enforced Operational Constraints:</span>
-                </div>
-                <ul className="list-disc list-inside text-slate-600 text-[11px] space-y-1">
-                  <li><strong>Hard Workload Cap:</strong> Maximum 16 hrs/week per faculty member</li>
-                  <li><strong>Emergency Standby:</strong> ≥ 2 rotating faculty members 100% free daily</li>
-                  <li><strong>Morning Rotation:</strong> Max 2 morning duty days (9:00–10:40 AM) per week</li>
-                  <li><strong>Parallel Redundancy:</strong> ≥ 1 qualified substitute free during multi-section slots</li>
-                  <li><strong>Block Structure:</strong> 2-hour theory blocks & 3-hour continuous lab blocks</li>
-                </ul>
+              <div className="bg-slate-50 border border-slate-200 rounded-xl p-3.5 flex items-center justify-between">
+                <span className="text-xs font-semibold text-slate-600">Generated Section:</span>
+                <span className="text-sm font-black text-navy-950 px-3 py-1 bg-white border border-slate-200 rounded-lg shadow-2xs font-mono">
+                  {proposedSectionName}
+                </span>
               </div>
 
-              {/* Scope Selection */}
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-2 uppercase tracking-wider">
-                  Generation Scope:
-                </label>
-                <div className="grid grid-cols-2 gap-2">
-                  <label className={`flex items-center gap-2 p-3 rounded-xl border cursor-pointer transition-all ${
-                    generateScope === 'section'
-                      ? 'border-navy-900 bg-navy-50/50 text-navy-950 font-bold'
-                      : 'border-slate-200 text-slate-600 hover:bg-slate-50'
-                  }`}>
-                    <input
-                      type="radio"
-                      name="scope"
-                      value="section"
-                      checked={generateScope === 'section'}
-                      onChange={() => setGenerateScope('section')}
-                      className="text-navy-900"
-                    />
-                    <span className="text-xs">
-                      {activeSection ? `${selectedYear}${selectedYear === 1 ? 'st' : selectedYear === 2 ? 'nd' : selectedYear === 3 ? 'rd' : 'th'} Yr - ${activeSection.name}` : 'Current Section'}
-                    </span>
-                  </label>
+              <p className="text-sm font-bold text-navy-900 text-center py-1">
+                Create {proposedSectionName}?
+              </p>
 
-                  <label className={`flex items-center gap-2 p-3 rounded-xl border cursor-pointer transition-all ${
-                    generateScope === 'all'
-                      ? 'border-navy-900 bg-navy-50/50 text-navy-950 font-bold'
-                      : 'border-slate-200 text-slate-600 hover:bg-slate-50'
-                  }`}>
-                    <input
-                      type="radio"
-                      name="scope"
-                      value="all"
-                      checked={generateScope === 'all'}
-                      onChange={() => setGenerateScope('all')}
-                      className="text-navy-900"
-                    />
-                    <span className="text-xs">
-                      All 16 Sections (1st to 4th Yr)
-                    </span>
-                  </label>
-                </div>
-              </div>
-
-              {/* Generation Result Stats */}
-              {generateResult && (
-                <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-xl text-xs space-y-2">
-                  <div className="flex items-center gap-1.5 text-emerald-900 font-bold">
-                    <Check className="w-4 h-4 text-emerald-600 shrink-0" />
-                    <span>{generateResult.message}</span>
-                  </div>
-                  {generateResult.standbyFloaters && (
-                    <div className="text-[11px] text-emerald-800 space-y-0.5">
-                      <div className="font-semibold">Rotating Emergency Floaters:</div>
-                      {Object.entries(generateResult.standbyFloaters).map(([d, floaters]) => (
-                        <div key={d} className="flex items-center justify-between border-b border-emerald-100/80 py-0.5">
-                          <span className="font-medium text-emerald-900">{d}:</span>
-                          <span>{floaters.join(', ')}</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* Modal Actions */}
-              <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
                 <button
                   type="button"
-                  onClick={() => setIsGenerateModalOpen(false)}
-                  className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 rounded-xl"
+                  onClick={() => setIsAddSectionOpen(false)}
+                  className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 rounded-xl transition-colors"
                 >
-                  Close
+                  Cancel
                 </button>
                 <button
                   type="button"
-                  onClick={handleRunGenerator}
-                  disabled={generateLoading}
-                  className="inline-flex items-center gap-1.5 px-5 py-2 text-xs font-bold bg-amber-400 hover:bg-amber-300 text-navy-950 rounded-xl shadow-xs disabled:opacity-50 transition-all font-black"
+                  onClick={handleConfirmAddSection}
+                  className="px-4 py-2 text-xs font-bold bg-navy-900 text-white rounded-xl hover:bg-navy-800 shadow-xs transition-colors"
                 >
-                  {generateLoading ? (
-                    <Loader2 className="w-4 h-4 animate-spin text-navy-950" />
+                  Confirm Create
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Section Two-Step Confirmation Modals */}
+      {deleteConfirmState && deleteConfirmState.step === 1 && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-navy-950/60 backdrop-blur-xs">
+          <div className="bg-white w-full max-w-sm rounded-2xl p-6 shadow-2xl border border-slate-200 animate-scale-up">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100 mb-4">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-xl bg-red-50 flex items-center justify-center text-red-600 font-bold">
+                  <Trash2 className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-navy-900">
+                    Delete Section
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    Confirmation 1 of 2
+                  </p>
+                </div>
+              </div>
+              <button 
+                onClick={handleCancelDelete}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              <p className="text-sm font-bold text-navy-900 text-center py-2">
+                Are you sure you want to delete {deleteConfirmState.sectionName}?
+              </p>
+
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={handleCancelDelete}
+                  className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 rounded-xl transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleContinueDelete}
+                  className="px-4 py-2 text-xs font-bold bg-navy-900 text-white rounded-xl hover:bg-navy-800 shadow-xs transition-colors"
+                >
+                  Continue
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {deleteConfirmState && deleteConfirmState.step === 2 && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-navy-950/60 backdrop-blur-xs">
+          <div className="bg-white w-full max-w-sm rounded-2xl p-6 shadow-2xl border border-slate-200 animate-scale-up">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100 mb-4">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-xl bg-red-100 flex items-center justify-center text-red-700 font-bold">
+                  <AlertCircle className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-red-900">
+                    Confirm Permanent Deletion
+                  </h3>
+                  <p className="text-xs text-red-600">
+                    Confirmation 2 of 2
+                  </p>
+                </div>
+              </div>
+              <button 
+                onClick={handleCancelDelete}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              <div className="p-3 bg-red-50 border border-red-200 rounded-xl">
+                <p className="text-xs font-medium text-red-800 leading-relaxed">
+                  This will permanently delete {deleteConfirmState.sectionName} and its associated timetable/section data. Do you want to continue?
+                </p>
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={handleCancelDelete}
+                  className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 rounded-xl transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleFinalConfirmDelete}
+                  className="px-4 py-2 text-xs font-bold bg-red-600 text-white rounded-xl hover:bg-red-700 shadow-xs transition-colors"
+                >
+                  Confirm Delete
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Upload Timetable Modal */}
+      {isUploadModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-navy-950/60 backdrop-blur-xs">
+          <div className="bg-white w-full max-w-lg rounded-2xl p-6 shadow-2xl border border-slate-200 animate-scale-up">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100 mb-4">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-xl bg-navy-50 flex items-center justify-center text-navy-900 font-bold">
+                  <Upload className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-navy-900">
+                    Upload Timetable
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    Target: {selectedYear}{selectedYear === 1 ? 'st' : selectedYear === 2 ? 'nd' : selectedYear === 3 ? 'rd' : 'th'} Year - {activeSection?.name || 'Section'}
+                  </p>
+                </div>
+              </div>
+              <button 
+                onClick={handleCancelUpload}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              {/* Required Upload Format Instructions */}
+              <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl text-xs space-y-2">
+                <div className="text-slate-700 font-semibold">
+                  Format: <span className="font-mono text-navy-900 font-bold">Day,Hour,Subject,Faculty,Room</span>
+                </div>
+                <div>
+                  <div className="text-[11px] text-slate-500 font-medium mb-1">Example:</div>
+                  <pre className="font-mono text-[11px] bg-white border border-slate-200 rounded-lg p-2.5 text-slate-800 leading-relaxed overflow-x-auto whitespace-pre">
+{`Monday,1,Deep Learning,Dr. G. Kishor Kumar,ET-4015
+Monday,2,Computer Vision,Ms. D. Saraswathi,ET-4022
+Monday,3,Cloud Computing,,ET-4034`}
+                  </pre>
+                </div>
+              </div>
+
+              {/* File upload drag/picker */}
+              <div>
+                <input
+                  type="file"
+                  ref={fileInputRef}
+                  accept=".csv,.json,.txt"
+                  onChange={handleFileSelect}
+                  className="hidden"
+                  id="timetable-file-input"
+                />
+                <label
+                  htmlFor="timetable-file-input"
+                  className="flex flex-col items-center justify-center p-6 border-2 border-dashed border-slate-300 hover:border-navy-900 rounded-2xl cursor-pointer bg-slate-50/50 hover:bg-navy-50/20 transition-all text-center"
+                >
+                  <Upload className="w-8 h-8 text-navy-900 mb-2" />
+                  <span className="text-xs font-bold text-navy-900">
+                    {uploadFile ? uploadFile.name : 'Click or drop timetable file here'}
+                  </span>
+                  <span className="text-[11px] text-slate-500 mt-1">
+                    Supports .csv, .txt, or .json
+                  </span>
+                </label>
+              </div>
+
+              {/* Parsing / Validating Loader */}
+              {uploadLoading && (
+                <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl flex items-center gap-2.5 text-xs text-slate-700">
+                  <Loader2 className="w-4 h-4 animate-spin text-navy-900 shrink-0" />
+                  <span>Validating timetable rules...</span>
+                </div>
+              )}
+
+              {/* Conflict / Error Message */}
+              {uploadError && (
+                <div className="p-3.5 bg-red-50 border border-red-200 rounded-xl text-xs space-y-1.5">
+                  <div className="flex items-start gap-2 text-red-900 font-bold">
+                    <AlertCircle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
+                    <span>{uploadError}</span>
+                  </div>
+                  <p className="text-[11px] text-red-700 pl-6">
+                    Existing timetable data remains completely untouched. Please correct the conflict in your file and try uploading again.
+                  </p>
+                </div>
+              )}
+
+              {/* Validation Success */}
+              {validationResult && validationResult.valid && !uploadLoading && (
+                <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-xl text-xs space-y-1">
+                  <div className="flex items-center gap-2 text-emerald-900 font-bold">
+                    <Check className="w-4 h-4 text-emerald-600 shrink-0" />
+                    <span>Timetable validated successfully!</span>
+                  </div>
+                  <p className="text-[11px] text-emerald-800 pl-6">
+                    Ready to replace timetable for {selectedYear}{selectedYear === 1 ? 'st' : selectedYear === 2 ? 'nd' : selectedYear === 3 ? 'rd' : 'th'} Year - {activeSection?.name}. All validation rules passed.
+                  </p>
+                </div>
+              )}
+
+              {/* Action Buttons: Cancel and Create */}
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={handleCancelUpload}
+                  className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 rounded-xl transition-colors"
+                >
+                  Cancel
+                </button>
+                {validationResult && validationResult.valid && !uploadLoading && (
+                  <button
+                    type="button"
+                    onClick={handleProceedToConfirm}
+                    className="px-4 py-2 text-xs font-bold bg-navy-900 text-white rounded-xl hover:bg-navy-800 shadow-xs transition-colors"
+                  >
+                    Create
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Final Create Confirmation Modal */}
+      {isConfirmReplaceOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-navy-950/60 backdrop-blur-xs">
+          <div className="bg-white w-full max-w-md rounded-2xl p-6 shadow-2xl border border-slate-200 animate-scale-up">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100 mb-4">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-xl bg-amber-50 flex items-center justify-center text-amber-700 font-bold">
+                  <AlertCircle className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-navy-900">
+                    Confirm Timetable Replacement
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    Final Confirmation
+                  </p>
+                </div>
+              </div>
+              <button 
+                onClick={handleCancelConfirm}
+                disabled={replaceLoading}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              <div className="p-3.5 bg-amber-50/70 border border-amber-200 rounded-xl">
+                <p className="text-xs font-semibold text-slate-800 leading-relaxed">
+                  Creating this timetable will delete the present timetable for {selectedYear}{selectedYear === 1 ? 'st' : selectedYear === 2 ? 'nd' : selectedYear === 3 ? 'rd' : 'th'} Year - {activeSection?.name} and replace it with the uploaded timetable. Do you want to continue?
+                </p>
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={handleCancelConfirm}
+                  disabled={replaceLoading}
+                  className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 rounded-xl transition-colors disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleExecuteReplace}
+                  disabled={replaceLoading}
+                  className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold bg-navy-900 text-white rounded-xl hover:bg-navy-800 shadow-xs transition-colors disabled:opacity-50"
+                >
+                  {replaceLoading ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin text-white" />
+                      <span>Replacing...</span>
+                    </>
                   ) : (
-                    <Wand2 className="w-4 h-4 text-navy-950" />
+                    <span>Confirm Create</span>
                   )}
-                  <span>{generateLoading ? 'Running Solver...' : 'Run Constraint Solver'}</span>
                 </button>
               </div>
             </div>

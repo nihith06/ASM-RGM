@@ -208,6 +208,16 @@ export const timetableApi = {
       method: 'POST',
       body: payload
     }),
+  validateUpload: (payload) =>
+    apiRequest('/timetables/validate-upload', {
+      method: 'POST',
+      body: payload
+    }),
+  replaceSectionTimetable: (payload) =>
+    apiRequest('/timetables/replace-section-timetable', {
+      method: 'POST',
+      body: payload
+    }),
   getVersion: () => apiRequest('/timetables/version')
 };
 
@@ -329,9 +339,12 @@ export const directoryApi = {
     if (params.length) url += `?${params.join('&')}`;
     return apiRequest(url);
   },
-  getFaculty: (search) => {
+  getFaculty: (search, date) => {
     let url = '/directory/faculty';
-    if (search) url += `?search=${encodeURIComponent(search)}`;
+    const params = [];
+    if (search) params.push(`search=${encodeURIComponent(search)}`);
+    if (date) params.push(`date=${encodeURIComponent(date)}`);
+    if (params.length) url += `?${params.join('&')}`;
     return apiRequest(url);
   },
   getStats: () => apiRequest('/directory/stats'),

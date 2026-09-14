@@ -590,10 +590,10 @@ function normalizeDayName(str) {
 }
 
 // POST validate uploaded timetable before any creation/replacement (Admin only)
-// Strictly checks ONLY the 3 specified rules:
+// Strictly checks ONLY the existing upload validation rules:
 // 1. Day (Monday-Saturday) & Hour (1-7)
 // 2. Faculty Teaching Conflict (only actual teaching hour overlaps; ignores Busy & Leave status)
-// 3. Subject Maximum Twice Per Week
+// (Note: Empty Subject, Faculty, or Room are accepted; subjects can appear any number of times per week)
 router.post('/validate-upload', authenticateToken, requireAdmin, (req, res) => {
   try {
     const { year, section_id, cells } = req.body;
@@ -689,34 +689,6 @@ router.post('/validate-upload', authenticateToken, requireAdmin, (req, res) => {
             error: `Cannot create timetable. ${fac} is already teaching on ${day} during Hour ${item.period} in ${conflictYearSuffix} Year - ${conflictSecName}.`
           });
         }
-      }
-    }
-
-    // ==========================================
-    // RULE 3 — SUBJECT MAXIMUM TWICE PER WEEK
-    // ==========================================
-    const subjectCounts = new Map();
-    for (const c of cells) {
-      const sub = (c.subject || '').trim();
-      // If Subject parameter is empty, do not count it
-      if (!sub || sub === '—' || sub === '-' || sub.toLowerCase() === 'nil' || sub.toLowerCase() === 'free') {
-        continue;
-      }
-      const lowerKey = sub.toLowerCase();
-      const curr = subjectCounts.get(lowerKey);
-      if (curr) {
-        curr.count += 1;
-      } else {
-        subjectCounts.set(lowerKey, { count: 1, name: sub });
-      }
-    }
-
-    for (const [, entry] of subjectCounts.entries()) {
-      if (entry.count > 2) {
-        return res.status(409).json({
-          valid: false,
-          error: `Cannot create timetable. ${entry.name} is scheduled ${entry.count} times in this week. A subject can appear a maximum of 2 times per week.`
-        });
       }
     }
 

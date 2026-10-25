@@ -1,6 +1,15 @@
 import http from 'node:http';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import bcrypt from 'bcryptjs';
-import db from './db.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+process.env.NODE_ENV = 'test';
+process.env.DB_PATH = process.env.DB_PATH || path.join(__dirname, 'data', 'temp-test.db');
+
+const { default: db } = await import('./db.js');
 
 const BASE_URL = 'http://localhost:5000';
 

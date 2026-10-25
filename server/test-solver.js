@@ -1,5 +1,14 @@
-import db, { syncSectionsAndFaculty, populateTimetablesData } from './db.js';
-import { generateSchedule } from './services/scheduleGenerator.js';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+process.env.NODE_ENV = 'test';
+process.env.DB_PATH = process.env.DB_PATH || path.join(__dirname, 'data', 'temp-test.db');
+
+const { default: db, syncSectionsAndFaculty, populateTimetablesData } = await import('./db.js');
+const { generateSchedule } = await import('./services/scheduleGenerator.js');
 
 async function runSolverVerification() {
   syncSectionsAndFaculty();

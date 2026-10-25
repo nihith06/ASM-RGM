@@ -1,7 +1,16 @@
 import http from 'node:http';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import bcrypt from 'bcryptjs';
-import db, { populateTimetablesData } from './db.js';
-import { getLastDispatchedOtp } from './services/smsService.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+process.env.NODE_ENV = 'test';
+process.env.DB_PATH = process.env.DB_PATH || path.join(__dirname, 'data', 'temp-test.db');
+
+const { default: db, populateTimetablesData } = await import('./db.js');
+const { getLastDispatchedOtp } = await import('./services/smsService.js');
 
 const BASE_URL = 'http://localhost:5000';
 
@@ -922,14 +931,14 @@ async function runTests() {
         confirm_password: 'facultypass123'
       }
     });
-    assert('Faculty password restored to valid new password', resetRes.status === 200);
+    assert('Faculty password restored to valid new password', resetRes.status === 200, JSON.stringify(resetRes));
 
     // Re-authenticate faculty after password restoration to update active session token
     const facRestoredLogin = await request('/api/auth/login', {
       method: 'POST',
       body: { register_id: 'FAC001', password: 'facultypass123' }
     });
-    assert('Faculty re-login with restored password succeeded', facRestoredLogin.status === 200 && facRestoredLogin.data.token);
+    assert('Faculty re-login with restored password succeeded', facRestoredLogin.status === 200 && facRestoredLogin.data.token, JSON.stringify(facRestoredLogin));
     facToken = facRestoredLogin.data?.token;
 
     // 21. Student Password Management (Faculty & Admin can reset student password)

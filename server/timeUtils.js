@@ -1,4 +1,4 @@
-// Helper utilities for calculating exact timetable period times and detecting actual time conflicts
+// Helper utilities for calculating exact timetable period times, timezone management, and conflict detection
 
 export const YEAR_1_SLOTS = {
   1: { start: 9 * 60, end: 9 * 60 + 50, label: '09:00 - 09:50 AM' },
@@ -30,9 +30,22 @@ export const PERIOD_LABELS = {
   7: '03:30 PM–05:00 PM'
 };
 
+/**
+ * Returns current date string formatted as YYYY-MM-DD strictly in Asia/Kolkata timezone.
+ */
+export function getKolkataDate(date = new Date()) {
+  const formatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Kolkata',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  });
+  return formatter.format(date);
+}
+
 export function formatDateHuman(dateStr) {
   if (!dateStr || !dateStr.includes('-')) {
-    dateStr = new Date().toISOString().split('T')[0];
+    dateStr = getKolkataDate();
   }
   const [yearStr, monthStr, dayStr] = dateStr.split('-');
   const monthNames = [
@@ -83,7 +96,6 @@ export function checkFacultyConflict(db, faculty_name, day, year, period, exclud
   `).all(cleanFaculty, day);
 
   for (const item of existingClasses) {
-    // Exclude the cell currently being edited if specified
     if (excludeCell) {
       if (excludeCell.id && item.id === excludeCell.id) continue;
       if (
@@ -111,6 +123,66 @@ export function checkFacultyConflict(db, faculty_name, day, year, period, exclud
           timeRange: existingRange
         },
         message: `Schedule Conflict: ${faculty_name} is already teaching "${item.subject}" (Year ${item.year}, ${item.section_name || 'Section'}) at ${existingRange.label}, which overlaps with the requested slot ${proposedRange.label}.`
+      };
+    }
+  }
+
+  return { conflict: false };
+}
+
+// Checks if assigning a classroom or lab to a specific year and period creates an actual room booking overlap across sections
+export function checkRoomConflict(db, room, day, year, period, excludeCell = null) {
+  if (!room || !room.trim() || room.trim() === '—') {
+    return { conflict: false };
+  }
+
+  const yr = parseInt(year, 10);
+  const p = parseInt(period, 10);
+  const proposedRange = getSlotTimeRange(yr, p);
+  if (!proposedRange) {
+    return { conflict: false };
+  }
+
+  const cleanRoom = room.trim().toUpperCase();
+
+  const existingClasses = db.prepare(`
+    SELECT t.id, t.year, t.section_id, t.day, t.period, t.subject, t.faculty_name, t.room, s.name as section_name
+    FROM timetables t
+    LEFT JOIN sections s ON t.section_id = s.id
+    WHERE UPPER(TRIM(t.room)) = ?
+      AND t.day = ?
+      AND t.subject != '—'
+  `).all(cleanRoom, day);
+
+  for (const item of existingClasses) {
+    if (excludeCell) {
+      if (excludeCell.id && item.id === excludeCell.id) continue;
+      if (
+        excludeCell.year === item.year &&
+        excludeCell.section_id === item.section_id &&
+        excludeCell.day === item.day &&
+        excludeCell.period === item.period
+      ) {
+        continue;
+      }
+    }
+
+    const existingRange = getSlotTimeRange(item.year, item.period);
+    if (existingRange && timesOverlap(proposedRange, existingRange)) {
+      return {
+        conflict: true,
+        room: cleanRoom,
+        day,
+        proposedSlot: { year: yr, period: p, timeRange: proposedRange },
+        conflictingClass: {
+          year: item.year,
+          section: item.section_name,
+          period: item.period,
+          subject: item.subject,
+          faculty_name: item.faculty_name,
+          timeRange: existingRange
+        },
+        message: `Room Conflict: Room "${cleanRoom}" is already booked for Year ${item.year} (${item.section_name || 'Section'}) teaching "${item.subject}" at ${existingRange.label}, which overlaps with the requested slot ${proposedRange.label}.`
       };
     }
   }

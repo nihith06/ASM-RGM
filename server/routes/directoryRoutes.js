@@ -2,49 +2,14 @@ import express from 'express';
 import bcrypt from 'bcryptjs';
 import db from '../db.js';
 import { authenticateToken, requireFacultyOrAdmin, requireAdmin } from '../auth.js';
+import { getKolkataDate } from '../timeUtils.js';
 
 const router = express.Router();
 
-// GET Student Directory
-// PRIVACY RULE: Only logged-in Faculty members and Admin can access!
-router.get('/students', authenticateToken, requireFacultyOrAdmin, (req, res) => {
-  try {
-    const { year, search } = req.query;
-    let query = `
-      SELECT id, register_id, name, phone, year, department, designation, created_at
-      FROM users
-      WHERE role = 'student'
-    `;
-    const params = [];
-
-    if (year) {
-      query += ' AND year = ?';
-      params.push(parseInt(year, 10));
-    }
-
-    if (search && search.trim()) {
-      query += ' AND (LOWER(name) LIKE ? OR LOWER(register_id) LIKE ? OR phone LIKE ?)';
-      const term = `%${search.trim().toLowerCase()}%`;
-      params.push(term, term, term);
-    }
-
-    query += ' ORDER BY year ASC, register_id ASC';
-
-    const students = db.prepare(query).all(...params);
-    res.json({ count: students.length, students });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
+// GET Student Directory - Retired (returns 404)
+router.get('/students', (req, res) => {
+  return res.status(404).json({ error: 'Student directory has been removed. Student accounts are not maintained.' });
 });
-
-// Helper to get local date string YYYY-MM-DD
-function getLocalDateString() {
-  const d = new Date();
-  const year = d.getFullYear();
-  const month = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
-}
 
 // GET Faculty Directory
 // PRIVACY RULE: Only logged-in Faculty members and Admin can access!
@@ -57,10 +22,10 @@ function getLocalDateString() {
 router.get('/faculty', authenticateToken, requireFacultyOrAdmin, (req, res) => {
   try {
     const { search, date: reqDate } = req.query;
-    // Determine calendar date (YYYY-MM-DD)
+    // Determine calendar date (YYYY-MM-DD) strictly in Asia/Kolkata
     const todayStr = (reqDate && /^\d{4}-\d{2}-\d{2}$/.test(reqDate.trim())) 
       ? reqDate.trim() 
-      : getLocalDateString();
+      : getKolkataDate();
 
     let query = `
       SELECT id, register_id, name, phone, department, designation, qualification, status, role, created_at
@@ -129,7 +94,6 @@ router.get('/faculty', authenticateToken, requireFacultyOrAdmin, (req, res) => {
 // GET overall statistics (for Admin & Faculty dashboard overviews)
 router.get('/stats', authenticateToken, (req, res) => {
   try {
-    const studentCount = db.prepare("SELECT COUNT(*) as count FROM users WHERE role = 'student'").get().count;
     const facultyCount = db.prepare(`
       SELECT COUNT(*) as count FROM users 
       WHERE role = 'faculty'
@@ -142,21 +106,10 @@ router.get('/stats', authenticateToken, (req, res) => {
     const sectionCount = db.prepare("SELECT COUNT(*) as count FROM sections").get().count;
     const timetableCount = db.prepare("SELECT COUNT(*) as count FROM timetables").get().count;
 
-    // Year-wise student distribution
-    const yearCounts = db.prepare(`
-      SELECT year, COUNT(*) as count
-      FROM users
-      WHERE role = 'student' AND year IS NOT NULL
-      GROUP BY year
-      ORDER BY year ASC
-    `).all();
-
     res.json({
-      students: studentCount,
       faculty: facultyCount,
       sections: sectionCount,
-      timetable_slots: timetableCount,
-      year_distribution: yearCounts
+      timetable_slots: timetableCount
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -167,7 +120,7 @@ router.get('/stats', authenticateToken, (req, res) => {
 router.put('/users/:id', authenticateToken, requireAdmin, (req, res) => {
   try {
     const userId = parseInt(req.params.id, 10);
-    const { register_id, name, phone, year, designation, qualification, status } = req.body;
+    const { register_id, name, phone, designation, qualification, status } = req.body;
 
     const existing = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
     if (!existing) {
@@ -193,7 +146,6 @@ router.put('/users/:id', authenticateToken, requireAdmin, (req, res) => {
 
     const cleanName = name ? name.trim() : existing.name;
     const cleanPhone = phone !== undefined ? phone.trim() : existing.phone;
-    const cleanYear = year !== undefined ? (year ? parseInt(year, 10) : null) : existing.year;
     const cleanDesig = designation !== undefined ? designation.trim() : existing.designation;
     const cleanQual = qualification !== undefined ? qualification.trim() : existing.qualification;
     const cleanStatus = status !== undefined ? status.trim() : (existing.status || 'active');
@@ -203,7 +155,6 @@ router.put('/users/:id', authenticateToken, requireAdmin, (req, res) => {
       SET register_id = ?,
           name = ?,
           phone = ?,
-          year = ?,
           designation = ?,
           qualification = ?,
           status = ?
@@ -212,7 +163,6 @@ router.put('/users/:id', authenticateToken, requireAdmin, (req, res) => {
       cleanRegisterId,
       cleanName,
       cleanPhone,
-      cleanYear,
       cleanDesig,
       cleanQual,
       cleanStatus,
@@ -259,58 +209,23 @@ router.delete('/users/:id', authenticateToken, requireAdmin, (req, res) => {
     }
 
     db.prepare('DELETE FROM users WHERE id = ?').run(userId);
+
+    try {
+      db.prepare(`
+        INSERT INTO audit_logs (action, performed_by_id, details)
+        VALUES ('ADMIN_DELETE_USER', ?, ?)
+      `).run(req.user.id, `Admin ${req.user.name} removed user: ${existing.name} (${existing.register_id}, role: ${existing.role})`);
+    } catch (e) {}
+
     res.json({ message: `User "${existing.name}" (${existing.register_id}) has been removed.` });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Failed to delete user.' });
   }
 });
 
-// Admin & Faculty Student Password Management
-// Allows authorized Admin or Faculty to reset a student's password with audit logging
-router.post('/students/:id/reset-password', authenticateToken, requireFacultyOrAdmin, (req, res) => {
-  try {
-    const studentId = parseInt(req.params.id, 10);
-    const { new_password } = req.body;
-
-    if (!new_password || new_password.length < 6) {
-      return res.status(400).json({ error: 'New password must be at least 6 characters.' });
-    }
-
-    const student = db.prepare('SELECT id, register_id, name, role FROM users WHERE id = ?').get(studentId);
-    if (!student) {
-      return res.status(404).json({ error: 'Student record not found.' });
-    }
-
-    if (student.role !== 'student') {
-      return res.status(403).json({ error: 'This management endpoint can only reset passwords for student accounts.' });
-    }
-
-    // Hash new password securely
-    const passwordHash = bcrypt.hashSync(new_password, 10);
-
-    // Update password in database
-    db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(passwordHash, student.id);
-
-    // Record action in audit log
-    const actionName = req.user.role === 'admin' ? 'ADMIN_RESET_STUDENT_PASSWORD' : 'FACULTY_RESET_STUDENT_PASSWORD';
-    db.prepare(`
-      INSERT INTO audit_logs (action, performed_by_id, target_user_id, details)
-      VALUES (?, ?, ?, ?)
-    `).run(
-      actionName,
-      req.user.id,
-      student.id,
-      `Password reset for Student: ${student.name} (${student.register_id}) by ${req.user.name} (${req.user.role.toUpperCase()})`
-    );
-
-    res.json({
-      message: `Password for student "${student.name}" (${student.register_id}) has been reset successfully!`,
-      student: { id: student.id, register_id: student.register_id, name: student.name }
-    });
-  } catch (error) {
-    console.error('Student password reset error:', error);
-    res.status(500).json({ error: error.message });
-  }
+// POST Student Password Reset - Retired (returns 404)
+router.post('/students/:id/reset-password', (req, res) => {
+  return res.status(404).json({ error: 'Student password reset endpoint has been removed. Student accounts are not maintained.' });
 });
 
 // GET Audit Logs (Admin only)
@@ -330,18 +245,37 @@ router.get('/audit-logs', authenticateToken, requireAdmin, (req, res) => {
 
     res.json({ count: logs.length, logs });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Failed to retrieve audit logs.' });
   }
 });
 
-// DELETE Audit Logs (Admin only)
-router.delete('/audit-logs', authenticateToken, requireAdmin, (req, res) => {
+// GET Export Audit Logs (Admin only)
+router.get('/audit-logs/export', authenticateToken, requireAdmin, (req, res) => {
   try {
-    const deleted = db.prepare('DELETE FROM audit_logs').run();
-    res.json({ message: 'Security Audit Trail cleared successfully', cleared_count: deleted.changes });
+    const logs = db.prepare(`
+      SELECT 
+        a.id, a.action, a.details, a.created_at,
+        p.name as performed_by_name, p.register_id as performed_by_id, p.role as performed_by_role,
+        t.name as target_user_name, t.register_id as target_user_id
+      FROM audit_logs a
+      LEFT JOIN users p ON a.performed_by_id = p.id
+      LEFT JOIN users t ON a.target_user_id = t.id
+      ORDER BY a.created_at DESC
+    `).all();
+
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Content-Disposition', 'attachment; filename="asms_audit_logs.json"');
+    res.json({ exported_at: new Date().toISOString(), total_records: logs.length, logs });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Failed to export audit logs.' });
   }
+});
+
+// DELETE Audit Logs (Forbidden - Immutable Trail)
+router.delete('/audit-logs', authenticateToken, requireAdmin, (req, res) => {
+  return res.status(403).json({
+    error: 'Audit logs cannot be deleted. Security audit records are immutable and must be preserved for compliance and non-repudiation.'
+  });
 });
 
 export default router;

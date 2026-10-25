@@ -1,5 +1,14 @@
-import db, { syncSectionsAndFaculty, populateTimetablesData } from './db.js';
-import { generateSchedule } from './services/scheduleGenerator.js';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+process.env.NODE_ENV = 'test';
+process.env.DB_PATH = process.env.DB_PATH || path.join(__dirname, 'data', 'temp-test.db');
+
+const { default: db, syncSectionsAndFaculty, populateTimetablesData } = await import('./db.js');
+const { generateSchedule } = await import('./services/scheduleGenerator.js');
 
 async function runSolverVerification() {
   syncSectionsAndFaculty();
@@ -90,7 +99,7 @@ async function runSolverVerification() {
   assert('Diagnostic Failure: Surfaces exact constraint failure reason', typeof failResult.constraint === 'string' && failResult.error.length > 0);
 
   // 7. Verify API /timetables endpoint returns faculty_details with RBAC phone privacy
-  // Query DB directly simulating student vs admin
+  // Query DB directly simulating public vs admin
   const sampleSec = db.prepare('SELECT id, year FROM sections LIMIT 1').get();
   const sampleFaculty = db.prepare(`
     SELECT DISTINCT t.subject, t.faculty_name, u.phone

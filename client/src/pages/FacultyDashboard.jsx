@@ -5,12 +5,10 @@ import {
   Clock, 
   Users, 
   Edit3, 
-  Sparkles, 
   Check, 
   X, 
   AlertCircle,
   Plus,
-  Trash2,
   BookOpen,
 } from 'lucide-react';
 import { facultyApi, leaveApi } from '../api';
@@ -299,7 +297,7 @@ export default function FacultyDashboard({ user }) {
           }`}
         >
           <Users className="w-4 h-4 text-emerald-600" />
-          <span>Student & Faculty Directory</span>
+          <span>Faculty Directory</span>
         </button>
 
         <button
@@ -363,7 +361,7 @@ export default function FacultyDashboard({ user }) {
                     Active Faculty Leave Intimation:
                   </div>
                   <div className="text-[11px] text-rose-800 mt-0.5">
-                    You have marked leave for <strong>{myLeaves.filter(l => l.status === 'leave').map(l => l.leave_date).join(', ')}</strong>. Students, faculty, and administrators have been notified, and your scheduled classes on those dates are tagged as affected.
+                    You have marked leave for <strong>{myLeaves.filter(l => l.status === 'leave').map(l => l.leave_date).join(', ')}</strong>. Faculty, administration, and students have been notified, and your scheduled classes on those dates are tagged as affected.
                   </div>
                 </div>
               </div>
@@ -738,7 +736,7 @@ export default function FacultyDashboard({ user }) {
         />
       )}
 
-      {/* Tab 4: Student & Faculty Directory */}
+      {/* Tab 4: Faculty Directory */}
       {activeTab === 'directory' && (
         <DirectoryView user={user} />
       )}

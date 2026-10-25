@@ -1,65 +1,45 @@
 import React, { useState, useEffect } from 'react';
 import { 
   ShieldCheck, 
-  Users, 
   Calendar, 
   Layers, 
-  FileSpreadsheet, 
-  Trash2, 
-  Edit3, 
   Plus, 
   Check, 
   X, 
-  AlertCircle,
-  GraduationCap,
-  BookOpenCheck,
-  Search,
-  Phone,
-  BarChart3,
-  Clock,
-  Key,
-  ShieldAlert,
-  FileText,
-  Lock,
-  Eye,
-  EyeOff
+  AlertCircle, 
+  BookOpenCheck, 
+  Search, 
+  Clock, 
+  ShieldAlert, 
+  Sparkles
 } from 'lucide-react';
+import ScheduleGeneratorModal from '../components/ScheduleGeneratorModal';
 import { directoryApi, authApi } from '../api';
 import TimetableGrid from '../components/TimetableGrid';
 import FacultyAvailabilityView from '../components/FacultyAvailabilityView';
 
 export default function AdminDashboard({ user }) {
-  const [activeTab, setActiveTab] = useState('timetables'); // 'timetables' | 'students' | 'faculty' | 'availability' | 'audit-logs'
+  const [activeTab, setActiveTab] = useState('timetables'); // 'timetables' | 'faculty' | 'availability' | 'audit-logs'
   const [stats, setStats] = useState(null);
-  const [students, setStudents] = useState([]);
   const [faculty, setFaculty] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
 
   // Modals & Forms
-  const [studentYearFilter, setStudentYearFilter] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
-  const [editingUser, setEditingUser] = useState(null); // for editing phone/name/year/register_id
+  const [editingUser, setEditingUser] = useState(null); // for editing phone/name/register_id
   const [editError, setEditError] = useState('');
   const [editLoading, setEditLoading] = useState(false);
   const [isAddUserModal, setIsAddUserModal] = useState(false);
-  const [newUserRole, setNewUserRole] = useState('student');
+  const [isGeneratorModal, setIsGeneratorModal] = useState(false);
+  const [newUserRole, setNewUserRole] = useState('faculty');
   const [newUserData, setNewUserData] = useState({
     name: '',
     register_id: '',
     password: '',
-    phone: '',
-    year: '1'
+    phone: ''
   });
-
-  // Student Password Reset (Admin override)
-  const [resettingStudent, setResettingStudent] = useState(null);
-  const [newStudentPassword, setNewStudentPassword] = useState('student123');
-  const [showStudentPw, setShowStudentPw] = useState(false);
-  const [resetLoading, setResetLoading] = useState(false);
-  const [resetError, setResetError] = useState('');
-  const [resetSuccess, setResetSuccess] = useState('');
 
   // Audit Logs State
   const [auditLogs, setAuditLogs] = useState([]);
@@ -70,11 +50,10 @@ export default function AdminDashboard({ user }) {
   }, []);
 
   useEffect(() => {
-    if (activeTab === 'students') loadStudents();
     if (activeTab === 'faculty') loadFaculty();
     if (activeTab === 'stats') loadStats();
     if (activeTab === 'audit-logs') loadAuditLogs();
-  }, [activeTab, studentYearFilter, searchTerm]);
+  }, [activeTab, searchTerm]);
 
   const loadStats = async () => {
     try {
@@ -82,18 +61,6 @@ export default function AdminDashboard({ user }) {
       setStats(data);
     } catch (e) {
       console.error(e);
-    }
-  };
-
-  const loadStudents = async () => {
-    setLoading(true);
-    try {
-      const data = await directoryApi.getStudents(studentYearFilter, searchTerm);
-      setStudents(data.students || []);
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      setLoading(false);
     }
   };
 
@@ -151,30 +118,6 @@ export default function AdminDashboard({ user }) {
     }
   };
 
-  const handleResetStudentPassword = async (e) => {
-    e.preventDefault();
-    if (!resettingStudent || !newStudentPassword) return;
-    if (newStudentPassword.length < 6) {
-      setResetError('Password must be at least 6 characters.');
-      return;
-    }
-    setResetLoading(true);
-    setResetError('');
-    try {
-      await directoryApi.resetStudentPassword(resettingStudent.id, newStudentPassword);
-      setResetSuccess(`Password for ${resettingStudent.name} (${resettingStudent.register_id}) has been updated!`);
-      loadAuditLogs();
-      setTimeout(() => {
-        setResettingStudent(null);
-        setResetSuccess('');
-      }, 1500);
-    } catch (err) {
-      setResetError(err.message || 'Failed to reset student password.');
-    } finally {
-      setResetLoading(false);
-    }
-  };
-
   const handleUpdateUser = async (e) => {
     e.preventDefault();
     if (!editingUser) return;
@@ -185,14 +128,12 @@ export default function AdminDashboard({ user }) {
         register_id: editingUser.register_id ? editingUser.register_id.trim().toUpperCase() : '',
         name: editingUser.name,
         phone: editingUser.phone,
-        year: editingUser.year ? parseInt(editingUser.year, 10) : null,
         designation: editingUser.designation,
         qualification: editingUser.qualification,
         status: editingUser.status
       });
       setSuccess(`User "${editingUser.name}" updated successfully!`);
       setEditingUser(null);
-      if (activeTab === 'students') loadStudents();
       if (activeTab === 'faculty') loadFaculty();
       loadAuditLogs();
       setTimeout(() => setSuccess(''), 3000);
@@ -208,7 +149,6 @@ export default function AdminDashboard({ user }) {
     try {
       await directoryApi.deleteUser(userId);
       setSuccess(`User "${userName}" deleted.`);
-      if (activeTab === 'students') loadStudents();
       if (activeTab === 'faculty') loadFaculty();
       loadStats();
       setTimeout(() => setSuccess(''), 3000);
@@ -220,18 +160,27 @@ export default function AdminDashboard({ user }) {
   const handleCreateUser = async (e) => {
     e.preventDefault();
     try {
-      await authApi.register({
-        name: newUserData.name.trim(),
-        register_id: newUserData.register_id.trim().toUpperCase(),
-        password: newUserData.password,
-        role: newUserRole,
-        phone: newUserData.phone.trim(),
-        year: newUserRole === 'student' ? parseInt(newUserData.year, 10) : null
-      });
+      if (newUserRole === 'admin') {
+        await authApi.registerAdmin({
+          name: newUserData.name.trim(),
+          register_id: newUserData.register_id.trim().toUpperCase(),
+          password: newUserData.password,
+          phone: newUserData.phone.trim(),
+          designation: 'Administrator'
+        });
+      } else {
+        await authApi.register({
+          name: newUserData.name.trim(),
+          register_id: newUserData.register_id.trim().toUpperCase(),
+          password: newUserData.password,
+          role: 'faculty',
+          phone: newUserData.phone.trim(),
+          designation: 'Faculty Member'
+        });
+      }
       setSuccess(`New ${newUserRole} created successfully!`);
       setIsAddUserModal(false);
-      setNewUserData({ name: '', register_id: '', password: '', phone: '', year: '1' });
-      if (activeTab === 'students') loadStudents();
+      setNewUserData({ name: '', register_id: '', password: '', phone: '' });
       if (activeTab === 'faculty') loadFaculty();
       loadStats();
       setTimeout(() => setSuccess(''), 3000);
@@ -269,27 +218,27 @@ export default function AdminDashboard({ user }) {
         </div>
 
         {/* Action Button: Create New User */}
-        <button
-          onClick={() => setIsAddUserModal(true)}
-          className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white/10 hover:bg-white/20 text-white text-xs font-bold border border-white/20 transition-all active:scale-95 cursor-pointer"
-        >
-          <Plus className="w-4 h-4 text-amber-300" />
-          <span>Register Account / Admin</span>
-        </button>
+        <div className="flex flex-wrap items-center gap-2.5">
+          <button
+            onClick={() => setIsGeneratorModal(true)}
+            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-amber-400 hover:bg-amber-300 text-navy-950 text-xs font-black transition-all active:scale-95 shadow-sm cursor-pointer"
+          >
+            <Sparkles className="w-4 h-4" />
+            <span>AI Schedule Generator</span>
+          </button>
+          <button
+            onClick={() => setIsAddUserModal(true)}
+            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white/10 hover:bg-white/20 text-white text-xs font-bold border border-white/20 transition-all active:scale-95 cursor-pointer"
+          >
+            <Plus className="w-4 h-4 text-amber-300" />
+            <span>Register Faculty / Admin</span>
+          </button>
+        </div>
       </div>
 
       {/* Stats Summary Cards */}
       {stats && (
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-          <div className="bg-white rounded-2xl p-5 border border-slate-200/90 shadow-academic">
-            <div className="flex items-center justify-between text-slate-400 mb-1">
-              <span className="text-xs font-bold uppercase tracking-wider">Total Students</span>
-              <GraduationCap className="w-5 h-5 text-navy-800" />
-            </div>
-            <div className="text-2xl sm:text-3xl font-black text-navy-900">{stats.students}</div>
-            <div className="text-[11px] text-slate-500 mt-1 font-medium">Enrolled across 1st–4th Year</div>
-          </div>
-
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <div className="bg-white rounded-2xl p-5 border border-slate-200/90 shadow-academic">
             <div className="flex items-center justify-between text-slate-400 mb-1">
               <span className="text-xs font-bold uppercase tracking-wider">Faculty Members</span>
@@ -331,18 +280,6 @@ export default function AdminDashboard({ user }) {
         >
           <Calendar className="w-4 h-4" />
           <span>Timetable</span>
-        </button>
-
-        <button
-          onClick={() => setActiveTab('students')}
-          className={`pb-3 text-xs sm:text-sm font-bold flex items-center gap-2 transition-all border-b-2 whitespace-nowrap ${
-            activeTab === 'students'
-              ? 'border-navy-900 text-navy-900'
-              : 'border-transparent text-slate-500 hover:text-slate-800'
-          }`}
-        >
-          <GraduationCap className="w-4 h-4" />
-          <span>Manage Students</span>
         </button>
 
         <button
@@ -408,116 +345,7 @@ export default function AdminDashboard({ user }) {
         <TimetableGrid user={user} initialYear={1} />
       )}
 
-      {/* TAB 2: Manage Students */}
-      {activeTab === 'students' && (
-        <div className="space-y-6">
-          <div className="bg-white rounded-2xl p-6 border border-slate-200/90 shadow-academic">
-            
-            <div className="flex flex-col sm:flex-row items-center justify-between gap-4 mb-6">
-              <div>
-                <h2 className="text-lg font-black text-navy-900">
-                  Manage Students Registry
-                </h2>
-                <p className="text-xs text-slate-500">
-                  Update records, verify unique register IDs, or remove student accounts.
-                </p>
-              </div>
-
-              {/* Filters */}
-              <div className="flex items-center gap-3 w-full sm:w-auto">
-                <div className="relative flex-1 sm:w-64">
-                  <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
-                  <input
-                    type="text"
-                    placeholder="Search students..."
-                    value={searchTerm}
-                    onChange={(e) => setSearchTerm(e.target.value)}
-                    className="w-full pl-9 pr-3 py-1.5 text-xs rounded-xl border border-slate-200 bg-slate-50/50"
-                  />
-                </div>
-
-                <select
-                  value={studentYearFilter}
-                  onChange={(e) => setStudentYearFilter(e.target.value)}
-                  className="text-xs font-bold border border-slate-200 rounded-xl px-3 py-1.5 bg-white"
-                >
-                  <option value="">All Years</option>
-                  <option value="1">1st Year</option>
-                  <option value="2">2nd Year</option>
-                  <option value="3">3rd Year</option>
-                  <option value="4">4th Year</option>
-                </select>
-              </div>
-            </div>
-
-            {/* Students Table */}
-            <div className="border border-slate-200 rounded-xl overflow-hidden">
-              <table className="w-full text-left border-collapse text-xs">
-                <thead>
-                  <tr className="bg-slate-100 text-[11px] font-bold text-navy-900 uppercase">
-                    <th className="py-2.5 px-4">Register ID</th>
-                    <th className="py-2.5 px-4">Student Name</th>
-                    <th className="py-2.5 px-4">Year</th>
-                    <th className="py-2.5 px-4">Phone</th>
-                    <th className="py-2.5 px-4 text-right">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-200">
-                  {students.length === 0 ? (
-                    <tr>
-                      <td colSpan="5" className="py-8 text-center text-slate-400">
-                        No students matching the criteria.
-                      </td>
-                    </tr>
-                  ) : (
-                    students.map(s => (
-                      <tr key={s.id} className="hover:bg-slate-50">
-                        <td className="py-3 px-4 font-mono font-bold text-navy-900">{s.register_id}</td>
-                        <td className="py-3 px-4 font-bold text-slate-800">{s.name}</td>
-                        <td className="py-3 px-4">
-                          <span className="px-2 py-0.5 rounded font-bold text-[10px] bg-navy-50 text-navy-900 border border-navy-200">
-                            Year {s.year}
-                          </span>
-                        </td>
-                        <td className="py-3 px-4 text-slate-700">{s.phone || '—'}</td>
-                        <td className="py-3 px-4 text-right space-x-2">
-                          <button
-                            onClick={() => {
-                              setResettingStudent(s);
-                              setNewStudentPassword('student123');
-                              setResetError('');
-                              setResetSuccess('');
-                              setShowStudentPw(false);
-                            }}
-                            className="text-xs font-bold text-amber-600 hover:text-amber-800 transition-colors"
-                          >
-                            Reset Pwd
-                          </button>
-                          <button
-                            onClick={() => setEditingUser(s)}
-                            className="text-xs font-bold text-navy-900 hover:text-navy-700"
-                          >
-                            Edit
-                          </button>
-                          <button
-                            onClick={() => handleDeleteUser(s.id, s.name)}
-                            className="text-xs font-bold text-red-600 hover:text-red-800"
-                          >
-                            Delete
-                          </button>
-                        </td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </div>
-
-          </div>
-        </div>
-      )}
-
-      {/* TAB 4: Manage Faculty */}
+      {/* TAB 2: Manage Faculty */}
       {activeTab === 'faculty' && (
         <div className="space-y-6">
           <div className="bg-white rounded-2xl p-6 border border-slate-200/90 shadow-academic">
@@ -627,12 +455,12 @@ export default function AdminDashboard({ user }) {
         </div>
       )}
 
-      {/* TAB 5: Availability Matrix */}
+      {/* TAB 3: Availability Matrix */}
       {activeTab === 'availability' && (
         <FacultyAvailabilityView user={user} />
       )}
 
-      {/* TAB 6: Security Audit Trail */}
+      {/* TAB 4: Security Audit Trail */}
       {activeTab === 'audit-logs' && (
         <div className="space-y-6">
           <div className="bg-white rounded-2xl p-6 border border-slate-200/90 shadow-academic">
@@ -643,7 +471,7 @@ export default function AdminDashboard({ user }) {
                   <span>Security Audit Trail</span>
                 </h2>
                 <p className="text-xs text-slate-500">
-                  Chronological security event logs for password changes, student resets, and system credentials.
+                  Chronological security event logs for password changes, account modifications, and system credentials.
                 </p>
               </div>
               <button
@@ -770,54 +598,36 @@ export default function AdminDashboard({ user }) {
                 />
               </div>
 
-              {editingUser.role === 'student' ? (
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1">Academic Year</label>
-                  <select
-                    value={editingUser.year || 1}
-                    onChange={(e) => setEditingUser({ ...editingUser, year: parseInt(e.target.value, 10) })}
-                    className="w-full text-xs p-2 rounded-lg border border-slate-300"
-                  >
-                    <option value={1}>1st Year</option>
-                    <option value={2}>2nd Year</option>
-                    <option value={3}>3rd Year</option>
-                    <option value={4}>4th Year</option>
-                  </select>
-                </div>
-              ) : (
-                <>
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1">Designation</label>
-                    <input
-                      type="text"
-                      value={editingUser.designation || ''}
-                      onChange={(e) => setEditingUser({ ...editingUser, designation: e.target.value })}
-                      className="w-full text-xs p-2 rounded-lg border border-slate-300"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1">Qualification</label>
-                    <input
-                      type="text"
-                      placeholder="e.g. M.Tech, Ph.D"
-                      value={editingUser.qualification || ''}
-                      onChange={(e) => setEditingUser({ ...editingUser, qualification: e.target.value })}
-                      className="w-full text-xs p-2 rounded-lg border border-slate-300"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1">Status</label>
-                    <select
-                      value={editingUser.status || 'active'}
-                      onChange={(e) => setEditingUser({ ...editingUser, status: e.target.value })}
-                      className="w-full text-xs p-2 rounded-lg border border-slate-300 bg-white"
-                    >
-                      <option value="active">Active (Fully Configured)</option>
-                      <option value="pending">Pending Details (Reserved Slot)</option>
-                    </select>
-                  </div>
-                </>
-              )}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">Designation</label>
+                <input
+                  type="text"
+                  value={editingUser.designation || ''}
+                  onChange={(e) => setEditingUser({ ...editingUser, designation: e.target.value })}
+                  className="w-full text-xs p-2 rounded-lg border border-slate-300"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">Qualification</label>
+                <input
+                  type="text"
+                  placeholder="e.g. M.Tech, Ph.D"
+                  value={editingUser.qualification || ''}
+                  onChange={(e) => setEditingUser({ ...editingUser, qualification: e.target.value })}
+                  className="w-full text-xs p-2 rounded-lg border border-slate-300"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">Status</label>
+                <select
+                  value={editingUser.status || 'active'}
+                  onChange={(e) => setEditingUser({ ...editingUser, status: e.target.value })}
+                  className="w-full text-xs p-2 rounded-lg border border-slate-300 bg-white"
+                >
+                  <option value="active">Active (Fully Configured)</option>
+                  <option value="pending">Pending Details (Reserved Slot)</option>
+                </select>
+              </div>
 
               <div className="flex items-center justify-end gap-2 pt-3">
                 <button
@@ -840,7 +650,7 @@ export default function AdminDashboard({ user }) {
         </div>
       )}
 
-      {/* Add User Modal (Student, Faculty, or Admin) */}
+      {/* Add User Modal (Faculty or Admin) */}
       {isAddUserModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-navy-950/60 backdrop-blur-xs">
           <div className="bg-white w-full max-w-md rounded-2xl p-6 shadow-2xl border border-slate-200 animate-scale-up">
@@ -848,22 +658,13 @@ export default function AdminDashboard({ user }) {
               Register New Academic Account
             </h3>
             <p className="text-xs text-slate-500 mb-4">
-              Create a new student, faculty, or administrator account for RGMCET AIML.
+              Create a new faculty or administrator account for RGMCET AIML.
             </p>
 
             <form onSubmit={handleCreateUser} className="space-y-3">
               <div>
                 <label className="block text-xs font-bold text-slate-700 mb-1">Role</label>
-                <div className="grid grid-cols-3 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setNewUserRole('student')}
-                    className={`py-1.5 rounded-lg text-xs font-bold border transition-all ${
-                      newUserRole === 'student' ? 'bg-navy-900 text-white border-navy-900' : 'bg-white text-slate-700 border-slate-200'
-                    }`}
-                  >
-                    Student
-                  </button>
+                <div className="grid grid-cols-2 gap-2">
                   <button
                     type="button"
                     onClick={() => setNewUserRole('faculty')}
@@ -891,7 +692,6 @@ export default function AdminDashboard({ user }) {
                   type="text"
                   required
                   placeholder={
-                    newUserRole === 'student' ? 'e.g. Ramesh Kumar' : 
                     newUserRole === 'faculty' ? 'e.g. Dr. K. Ramesh' : 'e.g. Prof. Administrator'
                   }
                   value={newUserData.name}
@@ -902,17 +702,14 @@ export default function AdminDashboard({ user }) {
 
               <div>
                 <label className="block text-xs font-bold text-slate-700 mb-1">
-                  {newUserRole === 'student' 
-                    ? 'Register ID' 
-                    : newUserRole === 'faculty' 
-                      ? 'Employee ID' 
-                      : 'Admin Username / ID'} (Unique)
+                  {newUserRole === 'faculty' 
+                    ? 'Employee ID' 
+                    : 'Admin Username / ID'} (Unique)
                 </label>
                 <input
                   type="text"
                   required
                   placeholder={
-                    newUserRole === 'student' ? 'e.g. 24091A3355' : 
                     newUserRole === 'faculty' ? 'e.g. FAC010' : 'e.g. ADMIN003'
                   }
                   value={newUserData.register_id}
@@ -920,22 +717,6 @@ export default function AdminDashboard({ user }) {
                   className="w-full text-xs p-2 rounded-lg border border-slate-300 font-mono uppercase"
                 />
               </div>
-
-              {newUserRole === 'student' && (
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1">Year</label>
-                  <select
-                    value={newUserData.year}
-                    onChange={(e) => setNewUserData({ ...newUserData, year: e.target.value })}
-                    className="w-full text-xs p-2 rounded-lg border border-slate-300"
-                  >
-                    <option value="1">1st Year</option>
-                    <option value="2">2nd Year</option>
-                    <option value="3">3rd Year</option>
-                    <option value="4">4th Year</option>
-                  </select>
-                </div>
-              )}
 
               <div>
                 <label className="block text-xs font-bold text-slate-700 mb-1">Phone</label>
@@ -980,107 +761,15 @@ export default function AdminDashboard({ user }) {
         </div>
       )}
 
-      {/* Student Password Reset Modal (Admin Override) */}
-      {resettingStudent && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-navy-950/60 backdrop-blur-xs animate-fade-in">
-          <div className="bg-white w-full max-w-sm rounded-2xl p-6 shadow-2xl border border-slate-200 animate-scale-up">
-            <div className="flex items-center justify-between mb-2">
-              <div className="flex items-center gap-2">
-                <div className="w-8 h-8 rounded-lg bg-amber-50 text-amber-700 border border-amber-200 flex items-center justify-center">
-                  <Key className="w-4 h-4" />
-                </div>
-                <div>
-                  <h3 className="text-base font-bold text-navy-900 leading-tight">
-                    Reset Student Password
-                  </h3>
-                  <p className="text-xs text-slate-500">
-                    {resettingStudent.name} ({resettingStudent.register_id})
-                  </p>
-                </div>
-              </div>
-              <button 
-                onClick={() => setResettingStudent(null)}
-                className="text-slate-400 hover:text-slate-600 p-1 rounded-lg"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            {resetError && (
-              <div className="p-3 mb-3 rounded-xl bg-red-50 border border-red-200 text-red-700 text-xs flex items-center gap-2">
-                <AlertCircle className="w-4 h-4 shrink-0" />
-                <span>{resetError}</span>
-              </div>
-            )}
-
-            {resetSuccess && (
-              <div className="p-3 mb-3 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-700 text-xs flex items-center gap-2">
-                <Check className="w-4 h-4 shrink-0" />
-                <span>{resetSuccess}</span>
-              </div>
-            )}
-
-            <form onSubmit={handleResetStudentPassword} className="space-y-3 mt-3">
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <label className="block text-xs font-bold text-slate-700">
-                    New Password
-                  </label>
-                  <button
-                    type="button"
-                    onClick={() => setNewStudentPassword('student123')}
-                    className="text-[10px] font-bold text-navy-900 hover:underline cursor-pointer"
-                  >
-                    Set Default (student123)
-                  </button>
-                </div>
-                <div className="relative">
-                  <Lock className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
-                  <input
-                    type={showStudentPw ? 'text' : 'password'}
-                    required
-                    value={newStudentPassword}
-                    onChange={(e) => setNewStudentPassword(e.target.value)}
-                    placeholder="Min 6 characters"
-                    className="w-full pl-9 pr-9 py-2 text-xs rounded-xl border border-slate-200 focus:outline-hidden focus:border-navy-900 focus:ring-1 focus:ring-navy-900 bg-slate-50/50"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowStudentPw(!showStudentPw)}
-                    className="absolute right-3 top-2.5 text-slate-400 hover:text-slate-600 cursor-pointer"
-                  >
-                    {showStudentPw ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                  </button>
-                </div>
-              </div>
-
-              <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-[11px] text-slate-500 flex items-start gap-2">
-                <ShieldAlert className="w-4 h-4 text-slate-400 shrink-0 mt-0.5" />
-                <span>
-                  This override will immediately update the student's credentials and will be logged in the security audit trail.
-                </span>
-              </div>
-
-              <div className="flex items-center justify-end gap-2 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setResettingStudent(null)}
-                  className="px-3 py-1.5 text-xs font-bold text-slate-600 hover:bg-slate-100 rounded-lg cursor-pointer"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={resetLoading || !newStudentPassword}
-                  className="px-4 py-1.5 text-xs font-bold bg-navy-900 text-white rounded-lg hover:bg-navy-800 disabled:opacity-50 cursor-pointer"
-                >
-                  {resetLoading ? 'Resetting...' : 'Save New Password'}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
+      {/* AI Schedule Generator Modal with Dry-Run */}
+      <ScheduleGeneratorModal
+        isOpen={isGeneratorModal}
+        onClose={() => setIsGeneratorModal(false)}
+        onGenerated={() => {
+          setSuccess('Schedule generation complete! Timetable grid updated.');
+          loadStats();
+        }}
+      />
 
         </div>
       </div>

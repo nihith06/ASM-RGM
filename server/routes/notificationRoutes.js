@@ -1,8 +1,22 @@
 import express from 'express';
+import rateLimit from 'express-rate-limit';
 import db from '../db.js';
-import { authenticateToken, requireAdmin } from '../auth.js';
+import { authenticateToken, requireAdmin, optionalAuthenticateToken } from '../auth.js';
+import { getKolkataDate } from '../timeUtils.js';
 
 const router = express.Router();
+
+const isTestEnv = process.env.NODE_ENV === 'test';
+
+// Rate Limiter for public notifications GET endpoint (60 requests/min per IP)
+const publicGetLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 60,
+  skip: (req) => isTestEnv && !req.headers['x-test-rate-limit'],
+  message: { error: 'Too many requests. Please wait a minute.' },
+  standardHeaders: true,
+  legacyHeaders: false
+});
 
 /**
  * Purge notifications that are older than exactly 1 month from creation.
@@ -21,40 +35,42 @@ export function purgeExpiredNotifications() {
 }
 
 // GET /api/notifications
-// Returns global academic intimations
+// Public access: Returns global academic intimations
 // Role-based visibility:
-// - Students: Automatically cleared at 12:00 AM (only current day's notifications visible)
-// - Admin & Faculty: All active notifications within 1-month lifespan visible with date metadata
+// - Anonymous Visitors / Guests: Automatically cleared at 12:00 AM IST (only current day's notifications visible)
+// - Admin & Faculty (authenticated): All active notifications within 1-month lifespan visible with date metadata
 // Automatically purges expired notifications (older than 1 month) upon access
-router.get('/', authenticateToken, (req, res) => {
+router.get('/', publicGetLimiter, optionalAuthenticateToken, (req, res) => {
   try {
     // 1. Auto-cleanup: remove notifications older than 1 month
     purgeExpiredNotifications();
 
-    // Determine current local application date
+    // Determine current local application date in Asia/Kolkata
     // Supports optional ?date=YYYY-MM-DD parameter for explicit date simulation / verification
-    const localToday = req.query.date || db.prepare("SELECT date('now', 'localtime') as d").get().d;
+    const localToday = req.query.date || getKolkataDate();
+
+    const isPrivileged = req.user && (req.user.role === 'faculty' || req.user.role === 'admin');
 
     // 2. Fetch active notifications
-    if (req.user && req.user.role === 'student') {
-      // Student view: Automatic daily clear after 12:00 AM (midnight)
+    if (!isPrivileged) {
+      // Public / Guest view: Automatic daily clear after 12:00 AM (midnight IST)
       // Only notifications created on the current local day are returned
       const notifications = db.prepare(`
-        SELECT id, type, faculty_id, faculty_name, leave_date, message, created_at,
-               date(created_at, 'localtime') as created_date
+        SELECT id, type, faculty_name, leave_date, message, created_at,
+               date(created_at, '+330 minutes') as created_date
         FROM global_notifications
-        WHERE date(created_at, 'localtime') = ?
+        WHERE date(created_at, '+330 minutes') = ?
         ORDER BY id DESC
         LIMIT 100
       `).all(localToday);
 
-      return res.json({ notifications, role: 'student', local_date: localToday });
+      return res.json({ notifications, role: 'guest', local_date: localToday });
     }
 
     // Admin & Faculty: Persistent across days with date metadata for visual divider
     const notifications = db.prepare(`
       SELECT id, type, faculty_id, faculty_name, leave_date, message, created_at,
-             date(created_at, 'localtime') as created_date
+             date(created_at, '+330 minutes') as created_date
       FROM global_notifications
       ORDER BY id DESC
       LIMIT 100
@@ -62,7 +78,7 @@ router.get('/', authenticateToken, (req, res) => {
 
     res.json({
       notifications,
-      role: req.user ? req.user.role : 'guest',
+      role: req.user.role,
       local_date: localToday
     });
   } catch (error) {
@@ -79,7 +95,7 @@ router.post('/clear', authenticateToken, (req, res) => {
 });
 
 // DELETE /api/notifications/:id
-// Admin can delete individual notifications globally (removes for Admin, Faculty, and Students)
+// Admin can delete individual notifications globally
 router.delete('/:id', authenticateToken, requireAdmin, (req, res) => {
   try {
     const notifId = parseInt(req.params.id, 10);

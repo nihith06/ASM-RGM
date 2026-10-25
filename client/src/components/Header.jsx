@@ -1,12 +1,10 @@
 import React from 'react';
 import { 
-  GraduationCap, 
-  Calendar, 
-  Users, 
   ShieldCheck, 
   LogOut, 
-  Sparkles,
-  BookOpenCheck
+  BookOpenCheck,
+  KeyRound,
+  LogIn
 } from 'lucide-react';
 import NotificationBox from './NotificationBox';
 
@@ -14,6 +12,7 @@ export default function Header({
   user, 
   onLogout, 
   onOpenAuth, 
+  onOpenChangePassword,
   currentTab, 
   setCurrentTab 
 }) {
@@ -52,30 +51,33 @@ export default function Header({
           {/* Navigation Links & User Actions */}
           <div className="flex items-center gap-2 sm:gap-4">
             {!user ? (
-              // Unauthenticated Navigation: Student and Faculty registration links
-              <div className="flex items-center gap-2 sm:gap-4">
+              // Unauthenticated Navigation: Public Notifications & Staff Portals
+              <div className="flex items-center gap-2 sm:gap-3">
+                <NotificationBox user={user} />
                 <button
-                  onClick={() => onOpenAuth('register', 'student')}
-                  className="text-xs sm:text-sm font-semibold text-slate-700 hover:text-navy-900 transition-colors px-2.5 py-1.5 rounded-lg hover:bg-slate-100"
+                  onClick={() => onOpenAuth('login', 'faculty')}
+                  className="inline-flex items-center gap-1.5 text-xs sm:text-sm font-bold text-navy-900 hover:text-navy-950 transition-colors px-3 py-1.5 rounded-xl border border-navy-200 hover:bg-navy-50 cursor-pointer"
                 >
-                  Student registration
+                  <BookOpenCheck className="w-3.5 h-3.5 text-navy-800" />
+                  <span>Faculty Portal</span>
                 </button>
                 <button
-                  onClick={() => onOpenAuth('register', 'faculty')}
-                  className="text-xs sm:text-sm font-semibold text-slate-700 hover:text-navy-900 transition-colors px-2.5 py-1.5 rounded-lg hover:bg-slate-100"
+                  onClick={() => onOpenAuth('login', 'admin')}
+                  className="inline-flex items-center gap-1.5 text-xs sm:text-sm font-bold text-white bg-navy-900 hover:bg-navy-800 transition-all px-3 py-1.5 rounded-xl shadow-xs cursor-pointer"
                 >
-                  Faculty registration
+                  <ShieldCheck className="w-3.5 h-3.5 text-amber-300" />
+                  <span>Admin Portal</span>
                 </button>
               </div>
             ) : (
               // Authenticated Navigation & Status
               <div className="flex items-center gap-2 sm:gap-3">
-                {/* Navigation pills: Only for student and admin, faculty has self-contained workspace */}
-                {user.role !== 'faculty' && (
+                {/* Navigation pills: Admin has Dashboard and Directory */}
+                {user.role === 'admin' && (
                   <nav className="hidden md:flex items-center gap-1 mr-2 bg-slate-100/80 p-1 rounded-xl border border-slate-200">
                     <button
                       onClick={() => setCurrentTab('dashboard')}
-                      className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all ${
+                      className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
                         currentTab === 'dashboard'
                           ? 'bg-white text-navy-900 shadow-xs'
                           : 'text-slate-600 hover:text-navy-900'
@@ -83,18 +85,16 @@ export default function Header({
                     >
                       Dashboard
                     </button>
-                    {user.role === 'admin' && (
-                      <button
-                        onClick={() => setCurrentTab('directory')}
-                        className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all ${
-                          currentTab === 'directory'
-                            ? 'bg-white text-navy-900 shadow-xs'
-                            : 'text-slate-600 hover:text-navy-900'
-                        }`}
-                      >
-                        Directory
-                      </button>
-                    )}
+                    <button
+                      onClick={() => setCurrentTab('directory')}
+                      className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
+                        currentTab === 'directory'
+                          ? 'bg-white text-navy-900 shadow-xs'
+                          : 'text-slate-600 hover:text-navy-900'
+                      }`}
+                    >
+                      Faculty Directory
+                    </button>
                   </nav>
                 )}
 
@@ -103,21 +103,16 @@ export default function Header({
                   <div className="w-8 h-8 rounded-lg bg-navy-100 border border-navy-300 text-navy-900 flex items-center justify-center font-bold text-xs">
                     {user.role === 'admin' ? (
                       <ShieldCheck className="w-4 h-4 text-navy-900" />
-                    ) : user.role === 'faculty' ? (
-                      <BookOpenCheck className="w-4 h-4 text-navy-900" />
                     ) : (
-                      <GraduationCap className="w-4 h-4 text-navy-900" />
+                      <BookOpenCheck className="w-4 h-4 text-navy-900" />
                     )}
                   </div>
                   <div className="text-left leading-tight hidden sm:block">
-                    <div className="text-xs font-bold text-slate-800 truncate max-w-[130px]">
+                    <div className="text-xs font-bold text-slate-800 truncate max-w-[140px]">
                       {user.name}
                     </div>
                     <div className="text-[10px] font-medium text-navy-700 capitalize flex items-center gap-1">
                       <span>{user.role}</span>
-                      {user.role === 'student' && user.year && (
-                        <span>• Year {user.year}</span>
-                      )}
                       <span>({user.register_id})</span>
                     </div>
                   </div>
@@ -125,6 +120,15 @@ export default function Header({
 
                 {/* Global Notification Box: Faculty Leave Intimations */}
                 <NotificationBox user={user} />
+
+                {/* Change Password Button */}
+                <button
+                  onClick={onOpenChangePassword}
+                  title="Change Password"
+                  className="p-2 text-slate-500 hover:text-navy-900 hover:bg-slate-100 rounded-lg transition-colors border border-transparent hover:border-slate-200 cursor-pointer"
+                >
+                  <KeyRound className="w-4 h-4" />
+                </button>
 
                 {/* Logout Button */}
                 <button

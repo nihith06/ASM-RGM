@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Bell, Calendar, User, Clock, Check, AlertCircle, ShieldAlert, X } from 'lucide-react';
+import { Bell, Calendar, User, Clock, AlertCircle, X } from 'lucide-react';
 import { notificationApi } from '../api';
 
 export default function NotificationBox({ user }) {
@@ -18,7 +18,7 @@ export default function NotificationBox({ user }) {
 
   const popoverRef = useRef(null);
   const isAdmin = Boolean(user && user.role === 'admin');
-  const isStudent = Boolean(user && user.role === 'student');
+  const isAnonymous = !user;
 
   useEffect(() => {
     loadNotifications();
@@ -206,7 +206,7 @@ export default function NotificationBox({ user }) {
           {/* Scope notice banner */}
           <div className="bg-amber-50/80 px-3 py-1.5 border-b border-amber-200/80 text-[10px] text-amber-900 font-medium flex items-center gap-1.5">
             <AlertCircle className="w-3 h-3 text-amber-700 shrink-0" />
-            <span>Official intimations broadcast to all students, faculty, and admins.</span>
+            <span>Official academic schedule intimations and faculty leave notifications.</span>
           </div>
 
           {/* Notification List */}
@@ -216,8 +216,8 @@ export default function NotificationBox({ user }) {
                 <Bell className="w-8 h-8 mx-auto mb-2 text-slate-300 stroke-1" />
                 <p className="text-xs font-bold text-slate-600">No active schedule intimations</p>
                 <p className="text-[10px] text-slate-400 mt-0.5">
-                  {isStudent
-                    ? 'Student notifications reset automatically daily. New intimations appear here immediately.'
+                  {isAnonymous
+                    ? 'Public notifications show active intimations for today.'
                     : 'When the timetable is updated or faculty marks leave, the notification appears here immediately.'}
                 </p>
               </div>
@@ -229,7 +229,7 @@ export default function NotificationBox({ user }) {
                 // Determine date divider for Admin and Faculty
                 const itemDate = getLocalDateKey(item);
                 const prevDate = idx > 0 ? getLocalDateKey(notifications[idx - 1]) : null;
-                const showDivider = !isStudent && prevDate && itemDate && itemDate !== prevDate;
+                const showDivider = !isAnonymous && prevDate && itemDate && itemDate !== prevDate;
 
                 return (
                   <React.Fragment key={item.id}>

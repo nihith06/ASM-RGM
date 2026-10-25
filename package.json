@@ -7,19 +7,30 @@
   "scripts": {
     "server": "node server/index.js",
     "client": "npm --prefix client run dev",
-    "build": "npm --prefix client install && npm --prefix client run build",
+    "build": "npm --prefix client ci && npm --prefix client run build",
     "start": "node server/index.js",
-    "test-api": "node server/test-api.js"
+    "test-api": "node server/test-api.js",
+    "test-solver": "node server/test-solver.js",
+    "test-realtime": "node server/test-realtime.js",
+    "test-verify": "node server/test-verify-phase5.js",
+    "test": "node server/test-api.js && node server/test-solver.js && node server/test-realtime.js && node server/test-verify-phase5.js",
+    "start:prod": "node server/index.js"
   },
-  "keywords": ["rgmcet", "aiml", "timetable", "academic", "schedule"],
+  "keywords": [
+    "rgmcet",
+    "aiml",
+    "timetable",
+    "academic",
+    "schedule"
+  ],
   "author": "AIML Dept, RGMCET",
   "license": "ISC",
   "dependencies": {
     "bcryptjs": "^3.0.3",
     "cors": "^2.8.6",
-    "csv-parser": "^3.2.1",
     "express": "^5.2.1",
-    "jsonwebtoken": "^9.0.3",
-    "multer": "^2.3.0"
+    "express-rate-limit": "^8.7.1",
+    "helmet": "^8.3.0",
+    "jsonwebtoken": "^9.0.3"
   }
 }

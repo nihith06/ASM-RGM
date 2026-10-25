@@ -24,11 +24,11 @@ export default function AuthModal({
   isOpen, 
   onClose, 
   initialMode = 'login', // 'login' | 'register' | 'forgot-password'
-  initialRole = 'student', // 'student' | 'faculty' | 'admin'
+  initialRole = 'faculty', // 'faculty' | 'admin'
   onAuthSuccess 
 }) {
   const [mode, setMode] = useState(initialMode);
-  const [role, setRole] = useState(initialRole);
+  const [role, setRole] = useState(initialRole === 'admin' ? 'admin' : 'faculty');
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -168,23 +168,24 @@ export default function AuthModal({
         // Registration
         if (!formData.name.trim()) throw new Error('Please enter your full name.');
         if (!formData.register_id.trim()) throw new Error('Please enter your Register ID or Employee ID.');
-        if (formData.password.length < 6) throw new Error('Password must be at least 6 characters.');
+        if (formData.password.length < 8 || !/[A-Za-z]/.test(formData.password) || !/[0-9]/.test(formData.password)) {
+          throw new Error('Password must be at least 8 characters and contain both letters and numbers.');
+        }
         
         const payload = {
           name: formData.name.trim(),
           register_id: formData.register_id.trim().toUpperCase(),
           password: formData.password,
-          role: role,
-          phone: formData.phone.trim(),
-          year: role === 'student' ? parseInt(formData.year, 10) : null
+          role: 'faculty',
+          phone: formData.phone.trim()
         };
 
         const res = await authApi.register(payload);
-        setSuccessMsg('Registration successful! Logging you in...');
+        setSuccessMsg(res.message || 'Registration submitted! Your faculty account is pending administrator approval before sign in.');
         setTimeout(() => {
-          onAuthSuccess(res.token, res.user);
+          setMode('login');
           onClose();
-        }, 1000);
+        }, 3000);
       }
     } catch (err) {
       setError(err.message || 'Authentication failed. Please check your credentials.');
@@ -195,9 +196,7 @@ export default function AuthModal({
 
   const roleTitle = role === 'admin' 
     ? 'Administrator' 
-    : role === 'faculty' 
-      ? 'Faculty' 
-      : 'Student';
+    : 'Faculty';
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-navy-950/60 backdrop-blur-xs animate-fade-in">
@@ -284,10 +283,8 @@ export default function AuthModal({
               <div className="w-8 h-8 rounded-lg bg-navy-100 text-navy-900 border border-navy-200 flex items-center justify-center font-bold">
                 {role === 'admin' ? (
                   <ShieldCheck className="w-4 h-4 text-navy-900" />
-                ) : role === 'faculty' ? (
-                  <BookOpenCheck className="w-4 h-4 text-navy-900" />
                 ) : (
-                  <GraduationCap className="w-4 h-4 text-navy-900" />
+                  <BookOpenCheck className="w-4 h-4 text-navy-900" />
                 )}
               </div>
               <div>
@@ -295,7 +292,7 @@ export default function AuthModal({
                   Selected Role
                 </span>
                 <span className="text-xs font-black text-navy-900 capitalize leading-tight">
-                  {role === 'admin' ? 'Administrator' : role === 'faculty' ? 'Faculty Member' : 'Student'}
+                  {role === 'admin' ? 'Administrator' : 'Faculty Member'}
                 </span>
               </div>
             </div>
@@ -605,7 +602,7 @@ export default function AuthModal({
                   <input
                     type="text"
                     required
-                    placeholder={role === 'student' ? 'e.g. Ramesh Kumar' : 'e.g. Dr. K. Ramesh'}
+                    placeholder="e.g. Dr. K. Ramesh"
                     value={formData.name}
                     onChange={(e) => handleInputChange('name', e.target.value)}
                     className="w-full pl-9 pr-3 py-2 text-sm rounded-xl border border-slate-200 focus:outline-hidden focus:border-navy-900 focus:ring-1 focus:ring-navy-900 bg-slate-50/50"
@@ -618,7 +615,7 @@ export default function AuthModal({
             <div>
               <div className="flex items-center justify-between mb-1">
                 <label className="block text-xs font-bold text-slate-700">
-                  {role === 'student' ? 'Student Register ID' : role === 'faculty' ? 'Faculty Employee ID' : 'Admin Username / ID'}
+                  {role === 'faculty' ? 'Faculty Employee ID' : 'Admin Username / ID'}
                 </label>
                 {mode === 'register' && (
                   <span className="text-[10px] text-slate-400">Must be unique</span>
@@ -630,8 +627,7 @@ export default function AuthModal({
                   type="text"
                   required
                   placeholder={
-                    role === 'student' ? 'Enter Student Register ID' : 
-                    role === 'faculty' ? 'Enter Faculty Employee ID' : 'Enter Admin Username / ID'
+                    role === 'faculty' ? 'Enter Faculty Employee ID (e.g. FAC002)' : 'Enter Admin Username / ID'
                   }
                   value={formData.register_id}
                   onChange={(e) => handleInputChange('register_id', e.target.value)}
@@ -639,31 +635,6 @@ export default function AuthModal({
                 />
               </div>
             </div>
-
-            {/* Student Year Selector (Only for student registration) */}
-            {mode === 'register' && role === 'student' && (
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">
-                  Academic Year (AIML)
-                </label>
-                <div className="grid grid-cols-4 gap-2">
-                  {[1, 2, 3, 4].map(yr => (
-                    <button
-                      key={yr}
-                      type="button"
-                      onClick={() => handleInputChange('year', yr.toString())}
-                      className={`py-1.5 rounded-lg text-xs font-bold border transition-all ${
-                        formData.year === yr.toString()
-                          ? 'bg-navy-900 text-white border-navy-900'
-                          : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
-                      }`}
-                    >
-                      {yr}{yr === 1 ? 'st' : yr === 2 ? 'nd' : yr === 3 ? 'rd' : 'th'} Yr
-                    </button>
-                  ))}
-                </div>
-              </div>
-            )}
 
             {/* Phone Number (Registration) */}
             {mode === 'register' && (
@@ -726,16 +697,6 @@ export default function AuthModal({
                   {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                 </button>
               </div>
-
-              {/* Student Password Assistance Notice */}
-              {mode === 'login' && role === 'student' && (
-                <div className="mt-2 p-2 rounded-lg bg-slate-50 border border-slate-200 text-[11px] text-slate-500 flex items-start gap-1.5">
-                  <ShieldAlert className="w-3.5 h-3.5 text-slate-400 mt-0.5 shrink-0" />
-                  <span>
-                    Forgot your password? For security, students must contact an AIML Faculty member or Department Administrator to reset their credentials.
-                  </span>
-                </div>
-              )}
             </div>
 
             {/* Submit Button */}

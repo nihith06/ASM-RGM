@@ -1,54 +1,118 @@
 import jwt from 'jsonwebtoken';
-import { getActiveSessionById, touchSession } from './db.js';
-
-const JWT_SECRET = process.env.JWT_SECRET || 'rgmcet_aiml_academic_schedule_secret_key_2026';
+import config from './env.js';
+import db, { getActiveSessionById, touchSession } from './db.js';
 
 export function generateToken(user, sessionId = null) {
+  // All authenticated users (faculty and admin) receive 12-hour session tokens
+  const expiresIn = '12h';
+
   return jwt.sign(
     {
       id: user.id,
       register_id: user.register_id,
       name: user.name,
       role: user.role,
-      year: user.year,
       department: user.department || 'AIML',
       designation: user.designation,
       session_id: sessionId || user.session_id || null
     },
-    JWT_SECRET,
-    { expiresIn: '7d' }
+    config.JWT_SECRET,
+    { expiresIn }
   );
 }
 
 export function authenticateToken(req, res, next) {
   const authHeader = req.headers['authorization'];
-  const token = (authHeader && authHeader.split(' ')[1]) || req.query?.token;
+  const token = authHeader && authHeader.split(' ')[1];
 
   if (!token) {
     return res.status(401).json({ error: 'Authentication token required' });
   }
 
-  jwt.verify(token, JWT_SECRET, (err, user) => {
+  jwt.verify(token, config.JWT_SECRET, (err, decodedUser) => {
     if (err) {
       return res.status(403).json({ error: 'Invalid or expired token' });
     }
 
-    // For Faculty and Admin: enforce active session validity
-    if ((user.role === 'faculty' || user.role === 'admin') && user.session_id) {
-      const activeSession = getActiveSessionById(user.session_id, 35000);
+    // Verify user still exists in the database and is currently active
+    const dbUser = db.prepare(`
+      SELECT id, register_id, name, role, phone, department, designation, status, must_change_password 
+      FROM users 
+      WHERE id = ?
+    `).get(decodedUser.id);
+
+    if (!dbUser) {
+      return res.status(401).json({ error: 'User account has been deleted or no longer exists.' });
+    }
+
+    if (dbUser.status !== 'active') {
+      return res.status(403).json({ 
+        error: dbUser.status === 'pending'
+          ? 'Your account is pending administrator approval.'
+          : 'Your account has been deactivated or suspended.'
+      });
+    }
+
+    // For active sessions with session_id: enforce validity
+    if (decodedUser.session_id) {
+      const activeSession = getActiveSessionById(decodedUser.session_id, 45000);
       if (!activeSession) {
         return res.status(401).json({ error: 'Session has expired or ended. Please sign in again.' });
       }
-      touchSession(user.session_id);
+      touchSession(decodedUser.session_id);
     }
 
-    req.user = user;
+    req.user = {
+      ...decodedUser,
+      ...dbUser
+    };
+    next();
+  });
+}
+
+/**
+ * Optional token authentication: populates req.user if a valid token is provided,
+ * but allows the request to continue as an anonymous visitor if no token or an invalid token is provided.
+ */
+export function optionalAuthenticateToken(req, res, next) {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+
+  if (!token) {
+    req.user = null;
+    return next();
+  }
+
+  jwt.verify(token, config.JWT_SECRET, (err, decodedUser) => {
+    if (err || !decodedUser?.id) {
+      req.user = null;
+      return next();
+    }
+
+    try {
+      const dbUser = db.prepare(`
+        SELECT id, register_id, name, role, phone, department, designation, status, must_change_password 
+        FROM users 
+        WHERE id = ?
+      `).get(decodedUser.id);
+
+      if (dbUser && dbUser.status === 'active') {
+        req.user = {
+          ...decodedUser,
+          ...dbUser
+        };
+      } else {
+        req.user = null;
+      }
+    } catch (e) {
+      req.user = null;
+    }
     next();
   });
 }
 
 // Strictly enforces the privacy rule:
-// "Student personal details and faculty personal details are visible ONLY to logged-in faculty members and admin"
+// Faculty personal contact details are visible ONLY to logged-in faculty members and admin
 export function requireFacultyOrAdmin(req, res, next) {
   if (!req.user) {
     return res.status(401).json({ error: 'Authentication required' });

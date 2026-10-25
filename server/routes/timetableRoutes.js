@@ -1,16 +1,41 @@
 import express from 'express';
+import rateLimit from 'express-rate-limit';
 import db, { isYear1AimlSubject, isYear2AimlSubject, isHodFaculty } from '../db.js';
-import { authenticateToken, requireAdmin } from '../auth.js';
-import { checkFacultyConflict, getSlotTimeRange, timesOverlap } from '../timeUtils.js';
+import { authenticateToken, requireAdmin, optionalAuthenticateToken } from '../auth.js';
+import { checkFacultyConflict, checkRoomConflict, getSlotTimeRange, timesOverlap, getKolkataDate } from '../timeUtils.js';
 import { generateSchedule } from '../services/scheduleGenerator.js';
 import { 
   registerClient, 
   broadcastTimetableUpdate, 
   getTimetableVersion,
-  shouldCreateTimetableNotification
+  shouldCreateTimetableNotification,
+  createSseTicket,
+  consumeSseTicket
 } from '../services/realtimeService.js';
 
 const router = express.Router();
+
+const isTestEnv = process.env.NODE_ENV === 'test';
+
+// Rate Limiter for public GET endpoints (60 requests per minute per IP)
+const publicGetLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 60,
+  skip: (req) => isTestEnv && !req.headers['x-test-rate-limit'],
+  message: { error: 'Too many requests. Please wait a minute.' },
+  standardHeaders: true,
+  legacyHeaders: false
+});
+
+// Rate Limiter for SSE connections (10 connections per minute per IP)
+const sseLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 10,
+  skip: (req) => isTestEnv && !req.headers['x-test-rate-limit'],
+  message: { error: 'Too many SSE connection attempts. Please wait a minute.' },
+  standardHeaders: true,
+  legacyHeaders: false
+});
 
 const VALID_DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
@@ -21,7 +46,7 @@ function notifyTimetableUpdate(year, sectionId, customMessage = null) {
     const secName = sec ? sec.name : `Section ${sectionId}`;
     const yearSuffix = year === 1 ? '1st' : year === 2 ? '2nd' : year === 3 ? '3rd' : '4th';
     const message = customMessage || `Admin updated the timetable for ${yearSuffix} Year - ${secName}.`;
-    const today = new Date().toISOString().split('T')[0];
+    const today = getKolkataDate();
 
     const notifKey = `${year}_${sectionId}`;
     if (shouldCreateTimetableNotification(notifKey)) {
@@ -43,18 +68,35 @@ function notifyTimetableUpdate(year, sectionId, customMessage = null) {
   }
 }
 
-// GET real-time Server-Sent Events stream
-router.get('/events', authenticateToken, (req, res) => {
+// POST generate short-lived, single-use ticket for SSE connection (optional)
+router.post('/events/ticket', optionalAuthenticateToken, (req, res) => {
+  const ticket = createSseTicket(req.user);
+  res.json({ ticket, expires_in: 30 });
+});
+
+// GET real-time Server-Sent Events stream (Public with rate limit & connection pool limit)
+router.get('/events', sseLimiter, (req, res) => {
+  if (req.query?.token) {
+    return res.status(401).json({ error: 'Direct token in query string is forbidden. Connect without token or use tickets.' });
+  }
+  const ticket = req.query?.ticket;
+  if (ticket) {
+    const user = consumeSseTicket(ticket);
+    if (!user) {
+      return res.status(401).json({ error: 'SSE ticket is invalid or has expired.' });
+    }
+    req.user = user;
+  }
   registerClient(req, res);
 });
 
-// GET current timetable version for polling fallback
-router.get('/version', authenticateToken, (req, res) => {
+// GET current timetable version for polling fallback (Public)
+router.get('/version', publicGetLimiter, (req, res) => {
   res.json(getTimetableVersion());
 });
 
-// GET all sections (optionally filtered by year)
-router.get('/sections', authenticateToken, (req, res) => {
+// GET all sections (Public - optionally filtered by year)
+router.get('/sections', publicGetLimiter, (req, res) => {
   try {
     const { year } = req.query;
     let query = 'SELECT * FROM sections';
@@ -139,9 +181,9 @@ router.delete('/sections/:id', authenticateToken, requireAdmin, (req, res) => {
   }
 });
 
-// GET timetable: accessible to all logged-in users (Students, Faculty, Admin)
+// GET timetable: Public read-only access for visitors, students, faculty, and administrators
 // Can view any year (1, 2, 3, 4) and section
-router.get('/', authenticateToken, (req, res) => {
+router.get('/', publicGetLimiter, optionalAuthenticateToken, (req, res) => {
   try {
     const year = parseInt(req.query.year || 1, 10);
     let sectionId = req.query.section_id ? parseInt(req.query.section_id, 10) : null;
@@ -239,19 +281,34 @@ router.get('/', authenticateToken, (req, res) => {
     }
 
     // Extract unique faculty teaching in this section for the PDF footer
-    const facultyListInSec = db.prepare(`
-      SELECT DISTINCT t.subject, t.faculty_name, u.phone
-      FROM timetables t
-      LEFT JOIN users u ON LOWER(TRIM(u.name)) = LOWER(TRIM(t.faculty_name)) AND u.role = 'faculty'
-      WHERE t.year = ? AND t.section_id = ? AND t.subject != '—' AND t.faculty_name != '—'
-      ORDER BY t.subject ASC
-    `).all(year, sectionId);
+    // Whitelisted public fields: subject, faculty_name, room
+    // SECURITY RULE: Phone numbers and user IDs are NEVER returned in public responses.
+    // Authenticated staff (admin/faculty) receive phone numbers for official administration.
+    const isStaff = Boolean(req.user && (req.user.role === 'admin' || req.user.role === 'faculty'));
 
-    const isStudent = req.user && req.user.role === 'student';
+    let facultyListInSec;
+    if (isStaff) {
+      facultyListInSec = db.prepare(`
+        SELECT DISTINCT t.subject, t.faculty_name, t.room, u.phone
+        FROM timetables t
+        LEFT JOIN users u ON LOWER(TRIM(u.name)) = LOWER(TRIM(t.faculty_name)) AND u.role = 'faculty'
+        WHERE t.year = ? AND t.section_id = ? AND t.subject != '—' AND t.faculty_name != '—'
+        ORDER BY t.subject ASC
+      `).all(year, sectionId);
+    } else {
+      facultyListInSec = db.prepare(`
+        SELECT DISTINCT t.subject, t.faculty_name, t.room
+        FROM timetables t
+        WHERE t.year = ? AND t.section_id = ? AND t.subject != '—' AND t.faculty_name != '—'
+        ORDER BY t.subject ASC
+      `).all(year, sectionId);
+    }
+
     const faculty_details = facultyListInSec.map(item => ({
       subject: item.subject,
       faculty_name: item.faculty_name,
-      phone: isStudent ? 'Protected' : (item.phone || '—')
+      room: item.room || '',
+      ...(isStaff ? { phone: item.phone || '—' } : {})
     }));
 
     res.json({
@@ -309,6 +366,25 @@ router.post('/cell', authenticateToken, requireAdmin, (req, res) => {
           return res.status(409).json({
             error: conflict.message,
             conflict
+          });
+        }
+      }
+    }
+
+    // Perform room double-booking check for each period
+    if (room && room.trim() && room.trim() !== '—' && cleanSubject && cleanSubject !== '—') {
+      for (const p of periodList) {
+        const roomConflict = checkRoomConflict(db, room, day, yr, p, {
+          year: yr,
+          section_id: secId,
+          day,
+          period: p
+        });
+
+        if (roomConflict.conflict) {
+          return res.status(409).json({
+            error: roomConflict.message,
+            conflict: roomConflict
           });
         }
       }
@@ -383,6 +459,22 @@ router.post('/bulk-grid', authenticateToken, requireAdmin, (req, res) => {
           return res.status(409).json({
             error: `Bulk upload stopped: ${conflict.message}`,
             conflict
+          });
+        }
+      }
+
+      if (c.room && c.room.trim() && c.room.trim() !== '—' && VALID_DAYS.includes(c.day) && p >= 1 && p <= 7 && sub && sub !== '—') {
+        const roomConflict = checkRoomConflict(db, c.room, c.day, yr, p, {
+          year: yr,
+          section_id: secId,
+          day: c.day,
+          period: p
+        });
+
+        if (roomConflict.conflict) {
+          return res.status(409).json({
+            error: `Bulk upload stopped: ${roomConflict.message}`,
+            conflict: roomConflict
           });
         }
       }
@@ -496,6 +588,22 @@ router.post('/import-csv', authenticateToken, requireAdmin, (req, res) => {
           });
         }
       }
+
+      if (c.room && c.room.trim() && c.room.trim() !== '—' && c.subject && c.subject !== '—') {
+        const roomConflict = checkRoomConflict(db, c.room, c.day, yr, c.period, {
+          year: yr,
+          section_id: secId,
+          day: c.day,
+          period: c.period
+        });
+
+        if (roomConflict.conflict) {
+          return res.status(409).json({
+            error: `CSV Import conflict: ${roomConflict.message}`,
+            conflict: roomConflict
+          });
+        }
+      }
     }
 
     const stmt = db.prepare(`
@@ -528,11 +636,13 @@ router.post('/import-csv', authenticateToken, requireAdmin, (req, res) => {
 // POST generate timetable using constraint satisfaction solver (Admin only)
 router.post('/generate', authenticateToken, requireAdmin, (req, res) => {
   try {
-    const { section_id, all_sections, year } = req.body;
+    const { section_id, all_sections, year, dry_run, dryRun } = req.body;
+    const isDryRun = Boolean(dry_run || dryRun);
     const result = generateSchedule({
       sectionId: section_id ? parseInt(section_id, 10) : null,
       allSections: Boolean(all_sections),
-      year: year ? parseInt(year, 10) : null
+      year: year ? parseInt(year, 10) : null,
+      dryRun: isDryRun
     });
 
     if (!result.success) {
@@ -556,7 +666,7 @@ router.post('/generate', authenticateToken, requireAdmin, (req, res) => {
       const notifMsg = all_sections
         ? 'Admin regenerated timetables across all academic sections.'
         : `Admin regenerated timetable for ${yearSuffix ? yearSuffix + ' Year' : 'the department'}.`;
-      const today = new Date().toISOString().split('T')[0];
+      const today = getKolkataDate();
       try {
         db.prepare(`
           INSERT INTO global_notifications (type, faculty_name, leave_date, message)
@@ -689,6 +799,52 @@ router.post('/validate-upload', authenticateToken, requireAdmin, (req, res) => {
             error: `Cannot create timetable. ${fac} is already teaching on ${day} during Hour ${item.period} in ${conflictYearSuffix} Year - ${conflictSecName}.`
           });
         }
+      }
+    }
+
+    // Intra-upload room double-booking check
+    const intraRoomMap = new Map();
+    for (const c of cells) {
+      const day = normalizeDayName(c.day);
+      const period = parseInt(c.period, 10);
+      const room = (c.room || '').trim();
+
+      if (!room || room === '—' || room === '-' || room.toLowerCase() === 'nil') {
+        continue;
+      }
+
+      const key = `${day}_${period}_${room.toUpperCase()}`;
+      if (intraRoomMap.has(key)) {
+        return res.status(409).json({
+          valid: false,
+          error: `Room Conflict: Room "${room}" is assigned multiple times on ${day} during Hour ${period} in the upload file.`
+        });
+      }
+      intraRoomMap.set(key, true);
+    }
+
+    // Database room conflict: check if room is already booked on the same day and overlapping time in another year/section
+    for (const c of cells) {
+      const day = normalizeDayName(c.day);
+      const period = parseInt(c.period, 10);
+      const room = (c.room || '').trim();
+
+      if (!room || room === '—' || room === '-' || room.toLowerCase() === 'nil') {
+        continue;
+      }
+
+      const roomConflict = checkRoomConflict(db, room, day, yr, period, {
+        year: yr,
+        section_id: secId,
+        day,
+        period
+      });
+
+      if (roomConflict.conflict) {
+        return res.status(409).json({
+          valid: false,
+          error: roomConflict.message
+        });
       }
     }
 

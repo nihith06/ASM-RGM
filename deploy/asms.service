@@ -1,0 +1,38 @@
+[Unit]
+Description=RGMCET AIML Academic Schedule Management System (ASMS)
+Documentation=https://github.com/rgmcet/asms
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/asms
+EnvironmentFile=/var/www/asms/.env
+Environment="NODE_ENV=production"
+Environment="TZ=Asia/Kolkata"
+Environment="HOST=127.0.0.1"
+Environment="PORT=5000"
+
+# Note: Node >= 22.13 supports native node:sqlite directly.
+# For Node 22.0.0 - 22.12.x, append --experimental-sqlite
+ExecStart=/usr/bin/node server/index.js
+
+Restart=always
+RestartSec=10
+KillMode=process
+TimeoutStopSec=20
+
+# Sandboxing and Security Hardening
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/www/asms/server/data /var/log/asms
+
+# Logging
+StandardOutput=append:/var/log/asms/systemd-out.log
+StandardError=append:/var/log/asms/systemd-error.log
+
+[Install]
+WantedBy=multi-user.target

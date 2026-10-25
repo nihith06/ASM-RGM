@@ -6,6 +6,34 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const rootDir = path.resolve(__dirname, '..');
 
+// Node.js Version and native node:sqlite Availability Check
+const [nodeMajor, nodeMinor] = process.versions.node.split('.').map(Number);
+if (nodeMajor < 22) {
+  console.error(`\n❌ FATAL STARTUP ERROR:`);
+  console.error(`RGMCET ASMS requires Node.js >= 22.13.0 for native SQLite support.`);
+  console.error(`Current Node.js version is v${process.versions.node}.`);
+  console.error(`Please install Node.js 22 LTS or newer.\n`);
+  process.exit(1);
+}
+
+try {
+  const { DatabaseSync } = await import('node:sqlite');
+  if (typeof DatabaseSync !== 'function') {
+    throw new Error('DatabaseSync constructor is unavailable on node:sqlite');
+  }
+} catch (sqliteErr) {
+  console.error(`\n❌ FATAL STARTUP ERROR:`);
+  console.error(`Native node:sqlite is not available: ${sqliteErr.message}`);
+  if (nodeMajor === 22 && nodeMinor < 13) {
+    console.error(`On Node.js versions prior to 22.13.0, launch node with the '--experimental-sqlite' flag:`);
+    console.error(`  node --experimental-sqlite server/index.js`);
+  } else {
+    console.error(`Please update to Node.js LTS (>= 22.13.0) where node:sqlite is enabled by default.`);
+  }
+  console.error('');
+  process.exit(1);
+}
+
 // Attempt loading .env file using native process.loadEnvFile
 const envPath = path.join(rootDir, '.env');
 if (fs.existsSync(envPath) && typeof process.loadEnvFile === 'function') {

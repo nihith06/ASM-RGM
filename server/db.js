@@ -30,11 +30,13 @@ db.exec(`
     register_id TEXT UNIQUE NOT NULL,
     name TEXT NOT NULL,
     password_hash TEXT NOT NULL,
-    role TEXT NOT NULL CHECK(role IN ('student', 'faculty', 'admin')),
+    role TEXT NOT NULL CHECK(role IN ('faculty', 'admin')),
     phone TEXT,
-    year INTEGER CHECK(year IS NULL OR year IN (1, 2, 3, 4)),
     department TEXT DEFAULT 'AIML',
     designation TEXT,
+    status TEXT DEFAULT 'active',
+    qualification TEXT,
+    must_change_password INTEGER DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
 
@@ -222,6 +224,140 @@ export function purgeOldNotifications() {
 const purgeInterval = setInterval(purgeOldNotifications, 60 * 60 * 1000);
 if (purgeInterval.unref) purgeInterval.unref();
 
+// ============================================================================
+// MIGRATION: 001_remove_students
+// Idempotent migration to remove all student data, drop users.year column,
+// and enforce role CHECK(role IN ('faculty', 'admin')).
+// ============================================================================
+export function migrateRemoveStudents(dbInstance = db, targetDbPath = dbPath) {
+  try {
+    dbInstance.exec(`
+      CREATE TABLE IF NOT EXISTS schema_migrations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        migration_name TEXT UNIQUE NOT NULL,
+        applied_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    const applied = dbInstance.prepare("SELECT id FROM schema_migrations WHERE migration_name = '001_remove_students'").get();
+    if (applied) {
+      return;
+    }
+
+    console.log('🔄 Applying migration: 001_remove_students (purging student accounts and updating schema)...');
+
+    // (a) Back up DB file automatically on first run of the migration
+    if (fs.existsSync(targetDbPath)) {
+      const backupFile = `${targetDbPath}.pre-student-removal-${Date.now()}.bak`;
+      try {
+        fs.copyFileSync(targetDbPath, backupFile);
+        console.log(`📦 Automatic pre-migration backup created: ${backupFile}`);
+      } catch (backupErr) {
+        try {
+          dbInstance.exec(`VACUUM INTO '${backupFile.replace(/\\/g, '/')}'`);
+          console.log(`📦 Automatic pre-migration backup created via VACUUM: ${backupFile}`);
+        } catch (vacErr) {
+          console.warn('⚠️ Could not create automatic backup file:', backupErr.message, vacErr.message);
+        }
+      }
+    }
+
+    // (b) & (c) In one transaction with foreign_keys handled
+    dbInstance.exec('PRAGMA foreign_keys = OFF;');
+    dbInstance.exec('BEGIN TRANSACTION;');
+
+    try {
+      // 1. Delete dependent records of students
+      dbInstance.exec(`
+        DELETE FROM active_sessions 
+        WHERE user_id IN (SELECT id FROM users WHERE role = 'student')
+           OR role = 'student';
+      `);
+
+      dbInstance.exec(`
+        DELETE FROM password_resets 
+        WHERE user_id IN (SELECT id FROM users WHERE role = 'student')
+           OR role = 'student';
+      `);
+
+      dbInstance.exec(`
+        DELETE FROM audit_logs 
+        WHERE target_user_id IN (SELECT id FROM users WHERE role = 'student')
+           OR performed_by_id IN (SELECT id FROM users WHERE role = 'student');
+      `);
+
+      // 2. Delete student records from users
+      dbInstance.exec("DELETE FROM users WHERE role = 'student';");
+
+      // 3. Rebuild users table without 'year' column and with role CHECK(role IN ('faculty', 'admin'))
+      dbInstance.exec(`
+        CREATE TABLE users_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          register_id TEXT UNIQUE NOT NULL,
+          name TEXT NOT NULL,
+          password_hash TEXT NOT NULL,
+          role TEXT NOT NULL CHECK(role IN ('faculty', 'admin')),
+          phone TEXT,
+          department TEXT DEFAULT 'AIML',
+          designation TEXT,
+          status TEXT DEFAULT 'active',
+          qualification TEXT,
+          must_change_password INTEGER DEFAULT 0,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+      `);
+
+      // 4. Copy surviving users (faculty and admin)
+      const userCols = dbInstance.prepare("PRAGMA table_info(users)").all().map(c => c.name);
+      const hasMustChange = userCols.includes('must_change_password');
+      const hasStatus = userCols.includes('status');
+      const hasQual = userCols.includes('qualification');
+
+      const statusExpr = hasStatus ? "COALESCE(status, 'active')" : "'active'";
+      const qualExpr = hasQual ? "qualification" : "NULL";
+      const pwExpr = hasMustChange ? "COALESCE(must_change_password, 0)" : "0";
+
+      dbInstance.exec(`
+        INSERT INTO users_new (id, register_id, name, password_hash, role, phone, department, designation, status, qualification, must_change_password, created_at)
+        SELECT id, register_id, name, password_hash, role, phone, department, designation, 
+               ${statusExpr}, ${qualExpr}, ${pwExpr}, created_at
+        FROM users;
+      `);
+
+      // 5. Swap tables
+      dbInstance.exec("DROP TABLE users;");
+      dbInstance.exec("ALTER TABLE users_new RENAME TO users;");
+
+      // 6. Recreate indexes
+      dbInstance.exec("CREATE INDEX IF NOT EXISTS idx_users_register_id ON users(register_id);");
+      dbInstance.exec("CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);");
+
+      // 7. Verify foreign keys
+      const fkErrors = dbInstance.prepare("PRAGMA foreign_key_check;").all();
+      if (fkErrors.length > 0) {
+        throw new Error('Foreign key integrity violation during migration: ' + JSON.stringify(fkErrors));
+      }
+
+      // 8. Record in schema_migrations
+      dbInstance.prepare("INSERT INTO schema_migrations (migration_name) VALUES ('001_remove_students')").run();
+
+      dbInstance.exec('COMMIT;');
+      console.log('✅ Migration 001_remove_students completed successfully.');
+    } catch (err) {
+      dbInstance.exec('ROLLBACK;');
+      throw err;
+    } finally {
+      dbInstance.exec('PRAGMA foreign_keys = ON;');
+    }
+  } catch (migErr) {
+    console.error('❌ Migration 001_remove_students failed:', migErr);
+    throw migErr;
+  }
+}
+
+// Run migration at initialization
+migrateRemoveStudents();
+
 // 13 Official Sections: 1st Yr (4), 2nd Yr (4), 3rd Yr (4), 4th Yr (1)
 export const OFFICIAL_SECTIONS = [
   { year: 1, name: 'Section A', sem: 1, academic_year: '2026-2027', batch: '2026-2030', effective_date: '15-07-2026' },
@@ -383,46 +519,8 @@ export function seedDatabase() {
   try { db.exec("ALTER TABLE users ADD COLUMN must_change_password INTEGER DEFAULT 0;"); } catch (e) {}
   try { db.exec("ALTER TABLE password_resets ADD COLUMN otp_hash TEXT;"); } catch (e) {}
 
-  const totalUsers = db.prepare('SELECT COUNT(*) as count FROM users').get().count;
-
   // Synchronize base registry and rooms (non-destructive)
   syncSectionsAndFaculty();
-
-  if (totalUsers === 0) {
-    console.log('🌱 Seeding initial sample student accounts with must_change_password flag...');
-
-    // Sample Students (Password: student123, forced change on first login)
-    const stuHash = bcrypt.hashSync('student123', 10);
-    const studentList = [
-      { id: '24091A3301', name: 'Rahul Varma', phone: '9123456701', year: 1 },
-      { id: '24091A3302', name: 'Keerthi Rao', phone: '9123456702', year: 1 },
-      { id: '23091A3315', name: 'Sneha Reddy', phone: '9123456703', year: 2 },
-      { id: '23091A3316', name: 'Aditya Varma', phone: '9123456704', year: 2 },
-      { id: '22091A3324', name: 'Karthik Kumar', phone: '9123456705', year: 3 },
-      { id: '22091A3325', name: 'Pooja Nair', phone: '9123456706', year: 3 },
-      { id: '21091A3340', name: 'Ananya Sharma', phone: '9123456707', year: 4 },
-      { id: '21091A3341', name: 'Vikram Seth', phone: '9123456708', year: 4 },
-    ];
-
-    const insertUserStmt = db.prepare(`
-      INSERT INTO users (register_id, name, password_hash, role, phone, department, designation, year, status, must_change_password)
-      VALUES (?, ?, ?, 'student', ?, 'AIML', 'Student', ?, 'active', 1)
-    `);
-
-    for (const s of studentList) {
-      insertUserStmt.run(s.id, s.name, stuHash, s.phone, s.year);
-    }
-  }
-
-  // Ensure default demo student exists for legacy tests
-  const demoStudent = db.prepare('SELECT id FROM users WHERE register_id = ?').get('22091A3324');
-  if (!demoStudent) {
-    const stuHash = bcrypt.hashSync('student123', 10);
-    db.prepare(`
-      INSERT INTO users (register_id, name, password_hash, role, phone, department, designation, year, status, must_change_password)
-      VALUES (?, ?, ?, 'student', ?, 'AIML', 'Student', ?, 'active', 1)
-    `).run('22091A3324', 'Karthik Kumar', stuHash, '9123456705', 3);
-  }
 
   // Ensure all timetable slots across all sections have valid room assignments
   ensureAllRoomsAssigned();

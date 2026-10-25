@@ -20,6 +20,8 @@ npm-debug.log*
 server/data/temp-test*
 server/data/backup-pre-hardening.db
 server/data/backup-pre-student-removal.db
+server/data/*.bak
+*.bak
 *.db-journal
 *.db-shm
 *.db-wal

@@ -1,304 +1,290 @@
 # RGMCET AIML Academic Schedule Management System (ASMS)
-## Hardening, Security Remediation, and On-Premise College Deployment Report
+## Architecture Transformation & Student Removal Report
 
 **Target Environment:** On-Premise College Linux Server (Ubuntu 22.04 / 24.04 LTS), Intranet / Campus LAN  
-**Branch:** `hardening/college-deploy`  
+**Branch:** `feature/remove-students`  
 **Date:** October 2026  
-**Status:** Hardened, Tested, Verified, Production-Ready  
+**Status:** Completed, Migrated, Tested (100% Pass), Production-Ready  
 
 ---
 
 ## 1. Executive Summary
 
-This document details all structural, security, functional, and deployment changes applied to the RGMCET AIML Academic Schedule Management System (ASMS). The project was hardened from a development-stage prototype into an on-premise, enterprise-grade academic system conforming to strict college security standards:
+This document details the complete architectural transformation of the RGMCET AIML Academic Schedule Management System (ASMS) from a 3-role authentication system (`student`, `faculty`, `admin`) to a streamlined **2-role system (`faculty`, `admin`) with Anonymous Read-Only Public Visitor Access**.
 
-- **100% Self-Contained:** Zero cloud dependencies, zero external internet calls during operation, zero external data leakage.
-- **Database Integrity:** Native `node:sqlite` in WAL mode. Baseline database (`server/data/academic.db`) preserved with exact byte-for-byte SHA256 integrity (`4E5203A69228E75582DC4F8072DE7447A79FCA66BCF6C16170539E754DB749F4`).
-- **Security Posture:** Elimination of OTP leakage, removal of rogue admin registration, protection of student PII against scraping, rate limiting on authentication routes, ticket-based single-use SSE streams, immutable audit logging, and strict CORS/CSP policies.
-- **Academic Fidelity:** Strict clock-time room collision checking across all 13 sections and 10 lecture halls / 2 labs, automated constraint-satisfaction schedule generation with dry-run preview, and accurate period timings (including the 70-minute lunch break) aligned between documentation, backend, and frontend.
-- **Deployment Readiness:** Production-tested PM2 configuration, Systemd unit, Nginx reverse proxy configuration with SSE streaming optimizations, automated WAL-safe SQLite backup/restore scripts, and comprehensive administrator deployment runbooks.
-
----
-
-## 2. Phase-by-Phase Changes
-
-### Phase 1: Inspection & Vulnerability Assessment
-- **Artifact:** [`docs/INSPECTION.md`](./INSPECTION.md)
-- Audited the complete codebase (React 19 + Vite frontend, Express 5 + native `node:sqlite` backend).
-- Verified and classified all 18 suspected security vulnerabilities and structural issues.
-- Established baseline checksums and verified database structure.
-
----
-
-### Phase 2: Security Fixes & Authentication Hardening (Blockers)
-
-#### 1. OTP Generation, Storage & SMS Gateway (`server/routes/authRoutes.js`, `server/services/smsService.js`)
-- **Vulnerability:** `debug_otp` was returned in HTTP responses on `/api/auth/forgot-password/request-otp`, and OTPs were generated using insecure `Math.random()`.
-- **Remediation:**
-  - Completely removed `debug_otp` from all responses. Responses now return a generic message: `"If this mobile number is associated with an active account, a verification code has been dispatched."`
-  - Replaced `Math.random()` with `crypto.randomInt(100000, 1000000)` (cryptographically secure PRNG).
-  - Stored only SHA-256 HMAC hashes (`crypto.createHash('sha256').update(otp + config.JWT_SECRET).digest('hex')`) in `password_resets.otp_hash`. Plaintext OTPs are never stored.
-  - Implemented rate limits (max 3 OTP requests / 15 min per phone, max 5 verification attempts before token invalidation).
-  - Designed pluggable SMS Gateway Provider interface (`server/services/smsService.js`) supporting:
-    - `console`: Development simulator logging to console with clear formatting.
-    - `msg91` / `fast2sms`: Ready for production Indian SMS gateway configuration.
-    - `none`: Safe production fallback (returns 503 error if no SMS provider is configured, never leaking codes).
-
-#### 2. Elimination of Public Admin Registration (`server/routes/authRoutes.js`)
-- **Vulnerability:** `POST /api/auth/register` allowed anyone to create an Administrator account by simply sending any `Authorization` header, which was never validated.
-- **Remediation:**
-  - Removed the admin registration branch from `POST /api/auth/register` completely. Public registration only accepts `'student'` or `'faculty'`.
-  - Admin creation is restricted strictly to `POST /api/auth/register-admin`, guarded by both `authenticateToken` and `requireAdmin`.
-
-#### 3. Student PII Protection & Faculty Account Moderation (`server/routes/authRoutes.js`, `server/db.js`)
-- **Vulnerability:** Unauthenticated self-registration permitted creating active Faculty accounts. A rogue user could register as faculty, access the student directory (phone numbers/PII), and arbitrarily reset student passwords.
-- **Remediation:**
-  - Added a `status` column to the `users` table (`'active'`, `'pending'`, `'suspended'`).
-  - Public registration for faculty accounts now sets `status = 'pending'`.
-  - Pending faculty cannot log in (`403 Forbidden: Account pending administrator approval`).
-  - Administrators must explicitly activate faculty accounts via `POST /api/directory/users/:id/approve`.
-  - Students cannot reset passwords via self-service OTP (`403 Forbidden`); only verified faculty or admins can reset student passwords.
-
-#### 4. JWT & Session Hardening (`server/env.js`, `server/auth.js`)
-- **Vulnerability:** Hardcoded fallback `JWT_SECRET` in `server/auth.js`, unexpiring 7-day tokens, lack of active user validation on incoming requests.
-- **Remediation:**
-  - Created centralized configuration in `server/env.js`.
-  - In production (`NODE_ENV=production`), the server immediately halts on startup if `JWT_SECRET` is missing or shorter than 32 characters.
-  - Shortened token lifetimes: **12 hours** for Faculty and Admin accounts, **7 days** for Student accounts.
-  - `authenticateToken` middleware now queries the database on every authenticated request to verify that the user still exists and has `status = 'active'`. Suspended or deleted users are rejected immediately (401/403).
-
-#### 5. Network & HTTP Hardening (`server/index.js`, `server/env.js`)
-- **CORS:** Replaced wildcard `*` with an explicit whitelist loaded from `ALLOWED_ORIGINS` (defaults to same-origin).
-- **Security Headers:** Added `helmet` with a Content Security Policy (CSP) compatible with the Vite frontend build and inline jsPDF rendering.
-- **Rate Limiting:** Added `express-rate-limit` with `keyGeneratorIpFallback: false`:
-  - Login: 10 attempts per 15 minutes per IP + Register ID.
-  - OTP routes: 6 requests per 15 minutes.
-  - Registration: 15 requests per hour.
-- **Reverse Proxy:** Configured `app.set('trust proxy', config.TRUST_PROXY)` (defaults to `1` for single-hop Nginx reverse proxy).
-- **Body Size Caps:** Reduced global body parser limit to `100kb` to mitigate buffer overflow / DoS attacks. Preserved `2mb` limit specifically for `/api/timetables` upload routes.
-
-#### 6. SSE Ticket Authentication (`server/routes/timetableRoutes.js`, `client/src/hooks/useRealtimeTimetable.js`)
-- **Vulnerability:** SSE endpoint accepted raw JWT in query string (`?token=`), causing tokens to be written to Nginx access logs and proxy history.
-- **Remediation:**
-  - Replaced with a two-phase ticket mechanism:
-    1. Client requests a ticket via `POST /api/timetables/events/ticket` with `Authorization: Bearer <token>`.
-    2. Server generates a cryptographically random, single-use ticket (`crypto.randomUUID()`) valid for 60 seconds.
-    3. Client connects to `GET /api/timetables/events?ticket=<ticket>`.
-    4. Server validates and immediately consumes the ticket (reusing returns 401).
-  - Updated frontend hook `useRealtimeTimetable.js` to fetch tickets before establishing EventSource connections.
-
-#### 7. Password Management & Forced Rotation (`server/routes/authRoutes.js`, `client/src/components/ChangePasswordModal.jsx`)
-- Added `POST /api/auth/change-password` requiring current password verification and enforcing password complexity (minimum 8 characters, at least one letter and one number).
-- Added `must_change_password` column to `users`. Initial seeded default accounts (`admin01`, `FAC001`...) have `must_change_password = 1`.
-- Built `ChangePasswordModal.jsx` in the frontend; prompts users immediately on first login and accessible via the user profile header.
-- Added password change audit logging in `security_audit_logs`.
-
-#### 8. Audit Log Immutability (`server/routes/directoryRoutes.js`)
-- **Vulnerability:** Admins could execute `DELETE /api/directory/audit-logs`, allowing an insider to cover tracks after unauthorized modifications.
-- **Remediation:**
-  - Disabled `DELETE /api/directory/audit-logs` (now returns `403 Forbidden: Security audit logs are immutable and cannot be purged`).
-  - Added `GET /api/directory/audit-logs/export` permitting administrators to export audit logs for external archival.
-
-#### 9. Non-Destructive Database Seeding (`server/db.js`)
-- Modified `seedDatabase()` to check if the `users` table is populated. Seed accounts are created only when the table is empty.
-- Password hashes for initial admin accounts are read from `ADMIN_INITIAL_PASSWORD` env var rather than hardcoded source strings.
-- Custom sections, faculty, and room configurations are preserved across server reboots.
+### Core Architecture After Transformation:
+1. **Zero Student Authentication / Storage:**
+   - Students no longer register, log in, manage passwords, or maintain accounts.
+   - All student records, sessions, and dependent data were safely purged from the SQLite database.
+   - The database schema constraint was updated to `CHECK(role IN ('faculty', 'admin'))`, and the `users.year` column was dropped.
+2. **Open Public Schedule & Availability Access:**
+   - Students and campus visitors can open the website without an account and immediately view:
+     - 6-day academic weekly timetables across all 4 cohorts (Years 1–4, Sections A–D).
+     - Interactive schedule date picker cross-referencing real-time faculty leaves.
+     - Faculty Availability Matrix displaying live free/busy schedules.
+     - Current-day academic intimations and leave notices.
+     - Official A4 Landscape PDF downloads.
+3. **Strict Privacy by Design:**
+   - Faculty phone numbers and internal employee IDs are strictly excluded from all public API responses and public PDF downloads.
+   - Genuine contact details are restricted exclusively to authenticated staff (Faculty and Admin).
+4. **Self-Contained & Production-Ready:**
+   - 100% self-contained on-premise operation with zero cloud dependencies.
+   - Real-time Server-Sent Events (SSE) push streaming with per-IP rate limiting and connection pool safeguards.
+   - Clean client production build with zero errors.
 
 ---
 
-### Phase 3: Bug Fixes, Academic Constraints & Solver Enhancements
+## 2. Phase-by-Phase Implementation Details
 
-#### 1. Clock-Time Room Double-Booking Prevention (`server/timeUtils.js`, `server/routes/timetableRoutes.js`)
-- **Bug:** Timetable update endpoints validated faculty clashes across sections, but did not check room double-booking. Two different sections could be assigned to the same room at overlapping clock times.
-- **Remediation:**
-  - Implemented `checkRoomConflict(db, room, day, year, period, excludeCell)` in `server/timeUtils.js`.
-  - Added room conflict validation across all 4 timetable write endpoints:
-    - `POST /api/timetables/cell`
-    - `POST /api/timetables/bulk-grid`
-    - `POST /api/timetables/import-csv`
-    - `POST /api/timetables/validate-upload`
-  - Returns clear HTTP 409 Conflict with details: `"Room Conflict: Room 'RG-207' is already occupied by Year 2 (Section A) at 09:00 - 09:50 AM."`
-
-#### 2. Schedule Generator Solver Room Pool & Dry-Run Preview (`server/services/scheduleGenerator.js`, `server/routes/timetableRoutes.js`, `client/src/components/ScheduleGeneratorModal.jsx`)
-- **Bug:** The automated schedule solver's room fallback pool reused `AIML-LH1` across multiple sections in the same time slot when sections lacked pre-assigned rooms.
-- **Remediation:**
-  - Rewrote the solver room assignment to pull from an available pool dynamically and ensure unique room allocation per period.
-  - Added support for `dryRun: true` in `POST /api/timetables/generate`, returning generated timetables, workload distribution, and room utilization without committing to the database.
-  - Built `ScheduleGeneratorModal.jsx` with a "Dry Run Preview" tab, constraint checklist, and one-click commit button. Added "AI Schedule Generator" action button in `AdminDashboard.jsx`.
-
-#### 3. Unused Dependency Pruning (`package.json`)
-- Pruned `multer` and `csv-parser` from `package.json` after verifying that CSV imports are handled entirely in memory via native text parsing.
-- Verified all remaining dependencies: `bcryptjs`, `cors`, `express`, `express-rate-limit`, `helmet`, `jsonwebtoken`.
-
-#### 4. Period Timings & Lunch Break Alignment (`README.md`, `server/timeUtils.js`, `client/src/components/OfficialPdfDocument.jsx`)
-- Corrected `README.md` to match actual college timings defined in `server/timeUtils.js`:
-  - **Year 1:** Period 3 ends at 11:50 AM. Lunch Break: 11:50 AM - 01:00 PM (70 mins). Period 4 starts at 01:00 PM.
-  - **Senior Years (2, 3, 4):** Period 4 ends at 12:40 PM. Lunch Break: 12:40 PM - 01:50 PM (70 mins). Period 5 starts at 01:50 PM.
-  - Aligned all periods, break slots, and PDF export header slots.
+### Phase 1: Inspection & Plan
+- **Artifact:** [`docs/STUDENT_REMOVAL_PLAN.md`](./STUDENT_REMOVAL_PLAN.md)
+- Complete audit of every student-related file, route, database column, component, and test case.
+- Documented file locations, line numbers, planned actions (delete, modify, retire), and risk mitigations.
 
 ---
 
-### Phase 4: College Server Deployment Infrastructure
-
-Created complete deployment infrastructure in `deploy/`:
-
-| File | Purpose | Key Specifications |
-|---|---|---|
-| [`deploy/ecosystem.config.cjs`](../deploy/ecosystem.config.cjs) | PM2 Process Manager | Single instance (`instances: 1`, `exec_mode: 'fork'`), `NODE_ENV=production`, `TZ=Asia/Kolkata`, `max_memory_restart: '500M'`, combined/error log rotation. |
-| [`deploy/asms.service`](../deploy/asms.service) | Systemd Service Unit | Alternative to PM2 with systemd security hardening (`ProtectSystem=full`, `PrivateTmp=true`, `NoNewPrivileges=true`). |
-| [`deploy/nginx/asms.conf`](../deploy/nginx/asms.conf) | Nginx Reverse Proxy | HTTP->HTTPS redirect, TLS 1.2/1.3 ciphers, static client caching, gzip, `client_max_body_size 2M`, and dedicated SSE location (`proxy_buffering off; chunked_transfer_encoding off; proxy_read_timeout 86400s;`). |
-| [`deploy/backup.sh`](../deploy/backup.sh) | Daily Database Backup | WAL-safe SQLite `.backup` command, gzip compression, SHA256 checksums, 30-day retention pruning, and optional NAS mount sync. |
-| [`deploy/restore.sh`](../deploy/restore.sh) | Database Restoration | Safe restore script with automatic pre-restore safety snapshots and verification. |
-| [`deploy/restore-test.sh`](../deploy/restore-test.sh) | Automated Backup Test | Restores backup to a temporary file, executes `PRAGMA integrity_check`, and verifies row counts. |
-| [`deploy/.env.example`](../deploy/.env.example) | Environment Template | Documented configuration template for college sysadmins. |
-| [`DEPLOYMENT.md`](../DEPLOYMENT.md) | Administrator Manual | Step-by-step guide for Ubuntu 22.04/24.04 LTS (prerequisites, installation, SSL, PM2, Nginx, UFW firewall, daily cron, backup verification, update procedures, rollback, and go-live checklist). |
-
-#### Enhanced Health Check (`server/index.js`)
-- `GET /api/health` now runs `SELECT 1` against the SQLite database. Returns `200 OK` (`status: "online", database: "healthy"`) when healthy, or `503 Service Unavailable` (`status: "degraded", database: "unhealthy: ..."`) if DB connectivity fails.
-
-#### Startup Checks (`server/env.js`)
-- Added startup assertions:
-  - Node.js >= 22.13.0 verified.
-  - Native `node:sqlite` constructor availability verified (instructs administrator to provide `--experimental-sqlite` flag if running on Node 22.0 - 22.12).
-  - In production, halts if `JWT_SECRET` is shorter than 32 characters.
+### Phase 2: Database Migration & Schema Update
+- **Implementation:** Added idempotent migration `001_remove_students` in `server/db.js`.
+- **Automatic Safety Snapshot:** On first execution, automatically creates a timestamped copy of the database (`*.bak`).
+- **Transactional Purge:**
+  - Deletes all rows where `role = 'student'` from `users`.
+  - Cascades deletions to `active_sessions`, `password_resets`, and student-targeted records in `security_audit_logs`.
+- **Table Rebuild (SQLite Table Recreation Pattern):**
+  - Recreated `users` table with updated constraint: `CHECK(role IN ('faculty', 'admin'))`.
+  - Dropped obsolete `users.year` column.
+  - Preserved all indexes and validated foreign keys with `PRAGMA foreign_key_check`.
+- **Tracking:** Created `schema_migrations` table to guarantee the migration runs exactly once.
+- **Seeding:** Removed all student seed data from `seedDatabase()`.
+- **Integrity Verification:**
+  - Baseline before migration: 24 users (2 students, 19 faculty, 3 admin).
+  - Baseline after migration: 22 users (0 students, 19 faculty, 3 admin).
+  - Surviving faculty and admin password hashes match `backup-pre-student-removal.db` 100%.
 
 ---
 
-### Phase 5: Verification & Testing Suite
+### Phase 3: Backend API Changes
 
-Created comprehensive verification test suite [`server/test-verify-phase5.js`](../server/test-verify-phase5.js) covering the 6 specific checks requested:
+#### 1. Authentication & Token Management (`server/auth.js`, `server/routes/authRoutes.js`)
+- Universal 12-hour JWT token expiration for all active sessions.
+- Removed `year` claim from JWT signing and verification queries.
+- Added `optionalAuthenticateToken` middleware to support optional authentication on public endpoints.
+- `POST /api/auth/register`:
+  - Rejects `role: 'student'` with `400 Bad Request: Student accounts do not exist. Timetables are publicly accessible without an account.`
+- `POST /api/auth/login`:
+  - Rejects `expected_role: 'student'` with `400 Bad Request`.
+  - Removed student role branches from authentication handlers.
+- `POST /api/auth/forgot-password/request-otp`:
+  - Rejects `role: 'student'` with `400 Bad Request`.
 
-1. **Login Brute-Force Rate Limiting:** 12 rapid failed logins with `x-test-rate-limit: 1`. Successfully triggers HTTP 429 Too Many Requests.
-2. **Absence of `debug_otp`:** Verified `POST /api/auth/forgot-password/request-otp` does not contain `debug_otp` or any plaintext code. Returns generic notification message.
-3. **Fake-Token Admin Registration Attempts:**
-   - Public `POST /api/auth/register` with role `admin` and fake JWT token is rejected (400/403).
-   - `POST /api/auth/register-admin` with fake JWT token is rejected (401/403).
-4. **Student Directory Access (RBAC):** Verified student token calling directory endpoints returns `403 Forbidden`:
-   - `GET /api/directory/students` -> 403 Forbidden
-   - `GET /api/directory/faculty` -> 403 Forbidden
-   - `GET /api/directory/audit-logs` -> 403 Forbidden
-   - `DELETE /api/directory/audit-logs` -> 403 Forbidden
-   - `POST /api/directory/students/:id/reset-password` -> 403 Forbidden
-5. **SSE Real-Time Sync Behind Simulated Proxy:**
-   - Single-use ticket requested with `X-Forwarded-For: 203.0.113.195` and `X-Forwarded-Proto: https`.
-   - EventSource connected via `/api/timetables/events?ticket=...`.
-   - Single-use ticket reuse rejected with 401.
-   - Admin cell update verified to broadcast `timetable_updated` event to connected proxy client.
-6. **PDF Export & Data Integrity Check:**
-   - Student role timetable query masks faculty phone numbers with `"Protected"`.
-   - Admin role timetable query provides genuine contact numbers for administrative PDF export.
-   - Verified compiled client production bundle (`client/dist`) includes jsPDF and html2canvas.
+#### 2. Retired Student Endpoints (`server/routes/directoryRoutes.js`)
+- `GET /api/directory/students`: Retired, returns `404 Not Found: Student directory has been removed.`
+- `POST /api/directory/students/:id/reset-password`: Retired, returns `404 Not Found: Student password reset endpoint has been removed.`
+- `GET /api/directory/stats`: Removed `students` count and `year_distribution` from metrics.
+- `PUT /api/directory/users/:id`: Removed `year` column update support.
 
----
+#### 3. Public Read-Only Timetable & Real-Time APIs (`server/routes/timetableRoutes.js`, `server/services/realtimeService.js`)
+- `GET /api/timetables`:
+  - Removed mandatory `authenticateToken` requirement; guarded with `publicGetLimiter` and `optionalAuthenticateToken`.
+  - **Data Privacy**: Anonymous callers receive safe whitelisted fields (`subject`, `faculty_name`, `room`). Phone numbers are omitted. Authenticated faculty and admins receive genuine contact numbers for official administration.
+- `GET /api/timetables/sections`: Made public with `publicGetLimiter`.
+- `GET /api/timetables/version`: Made public with `publicGetLimiter`.
+- `GET /api/timetables/events`:
+  - Public Server-Sent Events (SSE) live push stream.
+  - Enforced per-IP rate limit (10 connection attempts/minute).
+  - Enforced global server pool limit (max 500 concurrent connections) and per-IP pool limit (max 10 concurrent connections).
+  - Periodic keep-alive ping every 20 seconds.
+  - Clean disconnect memory management.
+  - Rejects query-string tokens (`?token=`) with `401 Unauthorized` to prevent token leakage in proxy logs.
 
-## 3. Test Execution Summary
+#### 4. Public Faculty Availability & Leave APIs (`server/routes/facultyRoutes.js`)
+- `GET /api/faculty/availability`:
+  - Public read-only access.
+  - Anonymous callers receive safe fields (`name`, `department`, `designation`, `status`, `schedule`). Internal database `id`, employee `register_id`, and `phone` are strictly stripped.
+  - Authenticated staff callers receive full metadata including `register_id`.
+- `GET /api/faculty/leaves`:
+  - Public read-only access.
+  - Anonymous callers receive safe fields (`date`, `faculty_name`, `status`, `reason`). Internal IDs and phone numbers are stripped.
 
-All tests executed against an isolated temporary database (`temp-test.db`). The production baseline database (`server/data/academic.db`) was untouched and verified by SHA256 checksum.
-
-| Test Suite | Command | Tests Run | Passed | Failed | Status |
-|---|---|---|---|---|---|
-| **API Integration** | `npm run test-api` | 176 | 176 | 0 | ✅ PASS |
-| **Constraint Solver** | `npm run test-solver` | 11 | 11 | 0 | ✅ PASS |
-| **Realtime SSE Sync** | `npm run test-realtime` | 15 | 15 | 0 | ✅ PASS |
-| **Phase 5 Hardening Verification** | `npm run test-verify` | 26 | 26 | 0 | ✅ PASS |
-| **Client Production Build** | `npm run build` | — | — | — | ✅ PASS (0 errors) |
-| **Full Suite** | `npm test` | **228** | **228** | **0** | **✅ 100% PASS** |
-
----
-
-## 4. Complete Files Touched Inventory
-
-### Created Files
-- `docs/INSPECTION.md` — Phase 1 Codebase inspection & vulnerability assessment report.
-- `docs/CHANGES.md` — Complete hardening and change documentation (this file).
-- `DEPLOYMENT.md` — Root copy of on-premise college server deployment manual.
-- `deploy/DEPLOYMENT.md` — Deployment manual in deploy bundle.
-- `deploy/ecosystem.config.cjs` — PM2 production configuration.
-- `deploy/asms.service` — Systemd service unit.
-- `deploy/nginx/asms.conf` — Nginx reverse proxy configuration.
-- `deploy/backup.sh` — WAL-safe SQLite backup script.
-- `deploy/restore.sh` — Database restore script.
-- `deploy/restore-test.sh` — Automated backup integrity verification script.
-- `deploy/.env.example` — Production environment template.
-- `.env.example` — Root environment template.
-- `server/env.js` — Native environment loader, configuration validator, and startup assertions.
-- `server/services/smsService.js` — Pluggable SMS gateway interface (console/msg91/fast2sms/none).
-- `server/test-verify-phase5.js` — Phase 5 security and integration verification test runner.
-- `client/src/components/ChangePasswordModal.jsx` — Forced and user-initiated password change modal.
-- `client/src/components/ScheduleGeneratorModal.jsx` — Admin automated schedule generator modal with dry-run preview.
-- `server/data/backup-pre-hardening.db` — Pristine backup of `academic.db` before any code changes.
-
-### Modified Files
-- `package.json` — Removed `multer` and `csv-parser`; added test and build scripts (`test-api`, `test-solver`, `test-realtime`, `test-verify`, `test`, `start:prod`, `build`).
-- `server/index.js` — Added Helmet, CORS whitelist, rate limiters, proxy trust, health check DB ping, body size caps, non-destructive seeding.
-- `server/auth.js` — Integrated `server/env.js`, verified user active status in DB on every request, role-based token expiration (12h/7d).
-- `server/db.js` — Added columns (`status`, `qualification`, `must_change_password`, `otp_hash`), non-destructive `seedDatabase()`, environment-aware `DB_PATH`.
-- `server/timeUtils.js` — Added `checkRoomConflict()` for room double-booking prevention.
-- `server/routes/authRoutes.js` — Removed admin self-registration, hashed OTPs, removed `debug_otp`, enforced pending status for faculty, added `POST /change-password`, rate limiting.
-- `server/routes/timetableRoutes.js` — Added single-use SSE ticket system, room collision checks in cell/bulk/import/upload routes, solver dry-run support.
-- `server/routes/directoryRoutes.js` — Made audit logs immutable (403 on DELETE), added audit log export, added faculty approval endpoint (`/users/:id/approve`).
-- `server/services/scheduleGenerator.js` — Fixed room assignment fallback pool, added dry-run preview mode.
-- `server/test-api.js` — Updated for ticket-based SSE, room collision assertions, pending faculty assertions, immutable audit logs.
-- `server/test-solver.js` — Updated for test environment isolation against `temp-test.db`.
-- `server/test-realtime.js` — Updated for single-use SSE ticket handshake and isolated test DB.
-- `client/src/App.jsx` — Integrated `ChangePasswordModal` for forced password rotation on login.
-- `client/src/pages/AdminDashboard.jsx` — Added AI Schedule Generator button and modal integration.
-- `client/src/hooks/useRealtimeTimetable.js` — Implemented two-phase ticket acquisition before EventSource connection.
-- `README.md` — Corrected period schedules and 70-minute lunch break timings to match actual implementation.
+#### 5. Public Notification API (`server/routes/notificationRoutes.js`)
+- `GET /api/notifications`:
+  - Public read-only access.
+  - Anonymous visitors receive active current-day intimations only (`leave_date = CURRENT_DATE`).
+  - Authenticated staff callers receive 1-month persistence for historical tracking.
 
 ---
 
-## 5. Remaining Risks & Assumptions
+### Phase 4: Frontend Architectural Changes
 
-1. **Single Node Deployment:** ASMS uses in-memory SSE client registries and session trackers. Running multiple backend instances behind a round-robin load balancer without sticky sessions or a shared pub/sub bus would break real-time SSE broadcasts. **Mitigation:** PM2 is configured for single-instance fork mode (`instances: 1`), which easily handles RGMCET AIML's 1,000+ concurrent students and faculty on a modern college server.
-2. **Local Disk Storage:** SQLite database file resides on the server local filesystem (`server/data/academic.db`). If the physical server drive fails without backups, data loss could occur. **Mitigation:** `deploy/backup.sh` runs daily via cron and includes an optional `NAS_BACKUP_DIR` variable to copy compressed backups to an off-box NFS/SMB share automatically.
-3. **SMS Gateway Credentials:** In production without SMS provider configuration (`SMS_PROVIDER=none`), faculty and administrators cannot reset passwords via SMS OTP. **Mitigation:** Administrators can reset passwords for any faculty or student directly from the Admin Dashboard. Once an SMS provider API key (e.g. MSG91) is acquired, it can be plugged into `.env` without code changes.
+#### 1. Page Removal
+- Deleted `client/src/pages/StudentDashboard.jsx` from repository.
+
+#### 2. Public Academic Schedule Portal (`client/src/pages/LandingPage.jsx`)
+- Replaced 3-card role selection with the comprehensive public academic schedule portal:
+  - Official RGMCET AIML branding banner featuring Head of Department Dr. G. Kishor Kumar.
+  - Quick action portal buttons: "Faculty Portal" and "Admin Portal".
+  - Main public tabs:
+    - **Academic Timetables (Years 1–4)**: Full interactive grid with Year switchers (1st–4th Year), Section switchers (Sections A–D), date picker for cross-referenced leaves, and high-DPI A4 Landscape PDF export.
+    - **Faculty Availability Matrix**: Live period-by-period faculty availability view.
+
+#### 3. Client Session & API Client (`client/src/api.js`)
+- Unified session storage to pure `sessionStorage` (cleared on tab close).
+- Eliminated `localStorage` student session split.
+- Removed retired methods: `getStudents()` and `resetStudentPassword()`.
+- Public SSE event subscription without token requirement, falling back to version polling.
+
+#### 4. Header Bar (`client/src/components/Header.jsx`)
+- Removed student registration link, student role badge, and year indicator.
+- Unauthenticated navigation surfaces:
+  - Public academic notification bell.
+  - "Faculty Portal" button.
+  - "Admin Portal" button.
+- Authenticated navigation preserves staff badge, password change modal, and session logout.
+
+#### 5. Faculty Directory View (`client/src/components/DirectoryView.jsx`)
+- Refactored into a focused **Faculty Directory**.
+- Completely removed the "Students" tab, student search filter, year dropdown, and student password reset modal.
+- Retained faculty profiles, designations, contact numbers (for logged-in staff), and administrative profile editor.
+
+#### 6. Admin Control Center (`client/src/pages/AdminDashboard.jsx`)
+- Removed "Total Students" stat card (retained 3 cards: Faculty Members, Active Sections, Timetable Slots).
+- Removed "Manage Students" tab and student table.
+- Removed student password reset modal and override handlers.
+- Updated account registration modal to offer only "Faculty" and "Admin" options.
+
+#### 7. Official PDF Export (`client/src/components/OfficialPdfDocument.jsx`)
+- Replaced `isStudent` check with `isStaff = user && (user.role === 'faculty' || user.role === 'admin')`.
+- When exporting PDFs as a public visitor, phone numbers are masked as `'—'` and tagged as `(Protected)`. Genuine phone numbers appear only for authenticated administrative staff.
+
+#### 8. Timetable Grid Component (`client/src/components/TimetableGrid.jsx`)
+- Removed student conditional restrictions.
+- Schedule Date filter and real-time leave status indicators (`⚠️ Faculty on Leave`) are universally displayed for all visitors.
+
+#### 9. Notification Popover (`client/src/components/NotificationBox.jsx`)
+- Cleaned up student-specific state.
+- Gracefully renders for anonymous public visitors displaying active daily intimations.
+
+#### 10. Application Root (`client/src/App.jsx`)
+- Removed `StudentDashboard` import and render route.
+- Default authentication modal role initialized to `'faculty'`.
+- Root routing:
+  - `!user` -> Public `LandingPage` (timetables, availability, notifications).
+  - `user.role === 'faculty'` -> `FacultyDashboard`.
+  - `user.role === 'admin'` -> `AdminDashboard` or `DirectoryView`.
 
 ---
 
-## 6. Manual Actions Required on the College Server
+### Phase 5: Test Suite Updates & Documentation
 
-When deploying onto the college server, the administrator must perform the following manual steps:
+#### 1. Automated Test Suite Updates
+- **`server/test-api.js`**:
+  - Replaced student registration/login tests with assertions verifying that `role: 'student'` is rejected with `400 Bad Request`.
+  - Added assertions verifying `GET /api/directory/students` and `POST /api/directory/students/:id/reset-password` return `404 Not Found`.
+  - Added assertions verifying unauthenticated public GETs succeed without token for `/api/timetables`, `/api/timetables/sections`, `/api/timetables/version`, `/api/faculty/availability`, `/api/faculty/leaves`, and `/api/notifications`.
+  - Added assertions verifying public responses strictly strip internal IDs and phone numbers.
+  - Added assertions verifying authenticated admin calls receive genuine contact numbers for PDF export.
+  - Result: **183 / 183 tests passed**.
+- **`server/test-solver.js`**:
+  - Verified constraint solver against isolated test database.
+  - Result: **11 / 11 tests passed**.
+- **`server/test-realtime.js`**:
+  - Verified single-use SSE ticket system, rejection of query tokens (`?token=`), and live push dispatch.
+  - Result: **15 / 15 tests passed**.
+- **`server/test-verify-phase5.js`**:
+  - Added checks verifying student login rejection, student registration rejection (400), retired directory endpoints (404), and unauthenticated access guards.
+  - Verified public PDF phone exclusion vs admin PDF phone inclusion.
+  - Result: **26 / 26 tests passed**.
+- **Full Test Runner (`npm test`)**:
+  - **235 tests executed across 4 test suites: 235 passed, 0 failed (100% pass rate)**.
 
-1. **Ensure Node.js LTS (>= 22.13.0) is installed:**
-   ```bash
-   node -v
-   # Must return v22.13.0 or higher
-   ```
-2. **Create the Production Environment File (`.env`):**
-   ```bash
-   cp deploy/.env.example .env
-   ```
-   Edit `.env` and set:
-   - `JWT_SECRET`: Generate a secure 64-character random string (`openssl rand -hex 32`).
-   - `ADMIN_INITIAL_PASSWORD`: Choose a strong initial administrative password.
-   - `ALLOWED_ORIGINS`: Set to your college domain (e.g., `https://asms.rgmcet.edu.in`).
-   - `HOST`: Set to `127.0.0.1`.
-   - `SMS_PROVIDER`: Set to `msg91` or `fast2sms` and add API keys if SMS is desired, or leave `none`.
-3. **Build the Frontend Assets:**
-   ```bash
-   npm run build
-   ```
-4. **Configure Nginx & SSL Certificates:**
-   - Copy `deploy/nginx/asms.conf` to `/etc/nginx/sites-available/asms.conf`.
-   - Update `server_name` to the college server hostname or intranet IP.
-   - Provide valid TLS certificates (or generate an internal college CA certificate).
-   - Symlink to `/etc/nginx/sites-enabled/` and reload Nginx (`sudo nginx -t && sudo systemctl reload nginx`).
-5. **Start ASMS with PM2:**
-   ```bash
-   pm2 start deploy/ecosystem.config.cjs
-   pm2 save
-   pm2 startup
-   ```
-6. **Set up Daily Database Backup Cron:**
-   ```bash
-   sudo chmod +x deploy/backup.sh deploy/restore.sh deploy/restore-test.sh
-   # Add to crontab (runs daily at 02:00 AM)
-   (crontab -l 2>/dev/null; echo "0 2 * * * /path/to/asms/deploy/backup.sh >> /var/log/asms-backup.log 2>&1") | crontab -
-   ```
-7. **First Login Password Rotation:**
-   - Log in using `admin01` and the initial password.
-   - The system will immediately require setting a permanent, secure administrator password.
+#### 2. Documentation Updates
+- **`README.md`**: Completely revised to document the 2-role system with anonymous visitor access, updated credentials table, and updated API route list.
+- **`docs/STUDENT_REMOVAL_PLAN.md`**: Completed and tracked.
+- **Repository Grep**: Verified with `git grep -i "student"` that no unretired student functional code remains.
+
+---
+
+### Phase 6: Final Verification
+
+#### 1. Client Production Build
+```bash
+npm run build
+```
+- Transformed 2,050 modules.
+- Generated compiled production bundle (`dist/index.html`, `dist/assets/*`) in 1.27s with zero errors.
+
+#### 2. Complete Test Suite
+```bash
+npm test
+```
+- Total test suites: 4
+- Total tests: 235
+- Passed: 235
+- Failed: 0
+- Execution time: ~20s
+
+---
+
+## 3. Files Modified & Deleted Inventory
+
+### Deleted Files
+- `client/src/pages/StudentDashboard.jsx`
+
+### Modified Backend Files
+- `server/auth.js`
+- `server/db.js`
+- `server/routes/authRoutes.js`
+- `server/routes/directoryRoutes.js`
+- `server/routes/facultyRoutes.js`
+- `server/routes/notificationRoutes.js`
+- `server/routes/timetableRoutes.js`
+- `server/services/realtimeService.js`
+
+### Modified Frontend Files
+- `client/src/App.jsx`
+- `client/src/api.js`
+- `client/src/components/AuthModal.jsx`
+- `client/src/components/DirectoryView.jsx`
+- `client/src/components/FacultyAvailabilityView.jsx`
+- `client/src/components/Header.jsx`
+- `client/src/components/NotificationBox.jsx`
+- `client/src/components/OfficialPdfDocument.jsx`
+- `client/src/components/TimetableGrid.jsx`
+- `client/src/pages/AdminDashboard.jsx`
+- `client/src/pages/FacultyDashboard.jsx`
+- `client/src/pages/LandingPage.jsx`
+
+### Modified Test & Documentation Files
+- `server/test-api.js`
+- `server/test-solver.js`
+- `server/test-realtime.js`
+- `server/test-verify-phase5.js`
+- `README.md`
+- `docs/STUDENT_REMOVAL_PLAN.md`
+- `docs/CHANGES.md`
+
+---
+
+## 4. Summary of Verification Checkpoints
+
+| Verification Checkpoint | Expected Behavior | Observed Result | Status |
+|---|---|---|---|
+| Student Registration | `POST /api/auth/register` with `role: 'student'` | HTTP 400 Bad Request | ✅ PASS |
+| Student Login | `POST /api/auth/login` with student ID | HTTP 400 / 401 | ✅ PASS |
+| Student Directory | `GET /api/directory/students` | HTTP 404 Not Found | ✅ PASS |
+| Student Password Reset | `POST /api/directory/students/:id/reset-password` | HTTP 404 Not Found | ✅ PASS |
+| Public Timetable Access | `GET /api/timetables?year=3` without token | HTTP 200 OK with full grid | ✅ PASS |
+| Public Timetable Phone Privacy | `GET /api/timetables` without token | Phones undefined / `'—'` | ✅ PASS |
+| Admin Timetable Phone Access | `GET /api/timetables` with admin token | Genuine phone numbers | ✅ PASS |
+| Public Sections Access | `GET /api/timetables/sections` without token | HTTP 200 OK | ✅ PASS |
+| Public Version Access | `GET /api/timetables/version` without token | HTTP 200 OK (timestamp > 0) | ✅ PASS |
+| Public SSE Stream | `GET /api/timetables/events` without token | HTTP 200 text/event-stream | ✅ PASS |
+| Query String Token Protection | `GET /api/timetables/events?token=...` | HTTP 401 Unauthorized | ✅ PASS |
+| Public Availability Matrix | `GET /api/faculty/availability` without token | HTTP 200 (IDs/phones stripped) | ✅ PASS |
+| Public Leaves API | `GET /api/faculty/leaves` without token | HTTP 200 (IDs/phones stripped) | ✅ PASS |
+| Public Notifications Filter | `GET /api/notifications` without token | Current day notifications only | ✅ PASS |
+| Client Production Build | `npm run build` | Zero syntax/build errors | ✅ PASS |
+| Database Schema Check | `users` table constraint | `role IN ('faculty', 'admin')` | ✅ PASS |
+| Database User Counts | Surviving rows in `academic.db` | 22 users (19 faculty, 3 admin) | ✅ PASS |
 
 ---
 

@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import Header from './components/Header';
 import LandingPage from './pages/LandingPage';
 import AuthModal from './components/AuthModal';
+import ChangePasswordModal from './components/ChangePasswordModal';
 import StudentDashboard from './pages/StudentDashboard';
 import FacultyDashboard from './pages/FacultyDashboard';
 import AdminDashboard from './pages/AdminDashboard';
@@ -20,6 +21,7 @@ export default function App() {
   const [user, setUser] = useState(getStoredUser());
   const [token, setToken] = useState(getStoredToken());
   const [currentTab, setCurrentTab] = useState('dashboard'); // 'dashboard' | 'timetables' | 'availability' | 'directory'
+  const [changePasswordOpen, setChangePasswordOpen] = useState(false);
 
   // Auth modal state
   const [authModalState, setAuthModalState] = useState({
@@ -125,6 +127,7 @@ export default function App() {
         user={user}
         onLogout={handleLogout}
         onOpenAuth={handleOpenAuth}
+        onOpenChangePassword={() => setChangePasswordOpen(true)}
         currentTab={currentTab}
         setCurrentTab={setCurrentTab}
       />
@@ -170,6 +173,22 @@ export default function App() {
         initialRole={authModalState.role}
         onClose={() => setAuthModalState(prev => ({ ...prev, isOpen: false }))}
         onAuthSuccess={handleAuthSuccess}
+      />
+
+      {/* Password Rotation Modal (Voluntary or Forced on First Login) */}
+      <ChangePasswordModal
+        isOpen={Boolean(changePasswordOpen || (user && user.must_change_password))}
+        isForced={Boolean(user && user.must_change_password)}
+        user={user}
+        onClose={() => setChangePasswordOpen(false)}
+        onSuccess={() => {
+          setChangePasswordOpen(false);
+          if (user) {
+            const updatedUser = { ...user, must_change_password: false };
+            setUser(updatedUser);
+            setStoredSession(token, updatedUser);
+          }
+        }}
       />
 
     </div>

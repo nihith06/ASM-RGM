@@ -1,13 +1,15 @@
 import express from 'express';
 import db, { isYear1AimlSubject, isYear2AimlSubject, isHodFaculty } from '../db.js';
 import { authenticateToken, requireAdmin } from '../auth.js';
-import { checkFacultyConflict, getSlotTimeRange, timesOverlap } from '../timeUtils.js';
+import { checkFacultyConflict, checkRoomConflict, getSlotTimeRange, timesOverlap, getKolkataDate } from '../timeUtils.js';
 import { generateSchedule } from '../services/scheduleGenerator.js';
 import { 
   registerClient, 
   broadcastTimetableUpdate, 
   getTimetableVersion,
-  shouldCreateTimetableNotification
+  shouldCreateTimetableNotification,
+  createSseTicket,
+  consumeSseTicket
 } from '../services/realtimeService.js';
 
 const router = express.Router();
@@ -21,7 +23,7 @@ function notifyTimetableUpdate(year, sectionId, customMessage = null) {
     const secName = sec ? sec.name : `Section ${sectionId}`;
     const yearSuffix = year === 1 ? '1st' : year === 2 ? '2nd' : year === 3 ? '3rd' : '4th';
     const message = customMessage || `Admin updated the timetable for ${yearSuffix} Year - ${secName}.`;
-    const today = new Date().toISOString().split('T')[0];
+    const today = getKolkataDate();
 
     const notifKey = `${year}_${sectionId}`;
     if (shouldCreateTimetableNotification(notifKey)) {
@@ -43,8 +45,26 @@ function notifyTimetableUpdate(year, sectionId, customMessage = null) {
   }
 }
 
+// POST generate short-lived, single-use ticket for SSE connection
+router.post('/events/ticket', authenticateToken, (req, res) => {
+  const ticket = createSseTicket(req.user);
+  res.json({ ticket, expires_in: 30 });
+});
+
 // GET real-time Server-Sent Events stream
-router.get('/events', authenticateToken, (req, res) => {
+// SECURITY FIX: Replaced permanent JWT in query string with short-lived, single-use ticket
+router.get('/events', (req, res) => {
+  const ticket = req.query?.ticket;
+  if (!ticket) {
+    return res.status(401).json({ error: 'SSE ticket required. Obtain ticket via POST /api/timetables/events/ticket' });
+  }
+
+  const user = consumeSseTicket(ticket);
+  if (!user) {
+    return res.status(401).json({ error: 'SSE ticket is invalid or has expired.' });
+  }
+
+  req.user = user;
   registerClient(req, res);
 });
 
@@ -556,7 +576,7 @@ router.post('/generate', authenticateToken, requireAdmin, (req, res) => {
       const notifMsg = all_sections
         ? 'Admin regenerated timetables across all academic sections.'
         : `Admin regenerated timetable for ${yearSuffix ? yearSuffix + ' Year' : 'the department'}.`;
-      const today = new Date().toISOString().split('T')[0];
+      const today = getKolkataDate();
       try {
         db.prepare(`
           INSERT INTO global_notifications (type, faculty_name, leave_date, message)

@@ -1,6 +1,7 @@
 import express from 'express';
 import db from '../db.js';
 import { authenticateToken, requireAdmin } from '../auth.js';
+import { getKolkataDate } from '../timeUtils.js';
 
 const router = express.Router();
 
@@ -31,19 +32,19 @@ router.get('/', authenticateToken, (req, res) => {
     // 1. Auto-cleanup: remove notifications older than 1 month
     purgeExpiredNotifications();
 
-    // Determine current local application date
+    // Determine current local application date in Asia/Kolkata
     // Supports optional ?date=YYYY-MM-DD parameter for explicit date simulation / verification
-    const localToday = req.query.date || db.prepare("SELECT date('now', 'localtime') as d").get().d;
+    const localToday = req.query.date || getKolkataDate();
 
     // 2. Fetch active notifications
     if (req.user && req.user.role === 'student') {
-      // Student view: Automatic daily clear after 12:00 AM (midnight)
+      // Student view: Automatic daily clear after 12:00 AM (midnight IST)
       // Only notifications created on the current local day are returned
       const notifications = db.prepare(`
         SELECT id, type, faculty_id, faculty_name, leave_date, message, created_at,
-               date(created_at, 'localtime') as created_date
+               date(created_at, '+330 minutes') as created_date
         FROM global_notifications
-        WHERE date(created_at, 'localtime') = ?
+        WHERE date(created_at, '+330 minutes') = ?
         ORDER BY id DESC
         LIMIT 100
       `).all(localToday);
@@ -54,7 +55,7 @@ router.get('/', authenticateToken, (req, res) => {
     // Admin & Faculty: Persistent across days with date metadata for visual divider
     const notifications = db.prepare(`
       SELECT id, type, faculty_id, faculty_name, leave_date, message, created_at,
-             date(created_at, 'localtime') as created_date
+             date(created_at, '+330 minutes') as created_date
       FROM global_notifications
       ORDER BY id DESC
       LIMIT 100

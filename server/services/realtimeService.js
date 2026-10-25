@@ -1,11 +1,48 @@
+import crypto from 'node:crypto';
+
 // Real-time synchronization service for academic schedule updates
 // Uses Server-Sent Events (SSE) for instantaneous push to connected clients
 // with version tracking for polling fallback.
 
 const sseClients = new Set();
+const sseTickets = new Map();
 let currentVersion = Date.now();
 let lastNotificationTime = 0;
 let lastNotificationKey = '';
+
+// Purge expired tickets every 60 seconds
+setInterval(() => {
+  const now = Date.now();
+  for (const [ticket, data] of sseTickets.entries()) {
+    if (now > data.expiresAt) {
+      sseTickets.delete(ticket);
+    }
+  }
+}, 60000).unref?.();
+
+/**
+ * Creates a short-lived single-use ticket for establishing an SSE connection
+ */
+export function createSseTicket(user) {
+  const ticket = crypto.randomBytes(24).toString('hex');
+  sseTickets.set(ticket, {
+    user: { id: user.id, role: user.role, name: user.name },
+    expiresAt: Date.now() + 30000 // 30 seconds validity
+  });
+  return ticket;
+}
+
+/**
+ * Validates and immediately consumes (deletes) an SSE single-use ticket
+ */
+export function consumeSseTicket(ticket) {
+  if (!ticket || typeof ticket !== 'string') return null;
+  const data = sseTickets.get(ticket);
+  if (!data) return null;
+  sseTickets.delete(ticket); // Single-use: consumed immediately
+  if (Date.now() > data.expiresAt) return null;
+  return data.user;
+}
 
 export function registerClient(req, res) {
   res.setHeader('Content-Type', 'text/event-stream');

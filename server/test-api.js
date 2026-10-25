@@ -1,5 +1,7 @@
 import http from 'node:http';
-import db from './db.js';
+import bcrypt from 'bcryptjs';
+import db, { populateTimetablesData } from './db.js';
+import { getLastDispatchedOtp } from './services/smsService.js';
 
 const BASE_URL = 'http://localhost:5000';
 
@@ -41,13 +43,29 @@ async function runTests() {
     }
   }
 
+  let localServer = null;
   try {
+    try {
+      const ping = await fetch('http://127.0.0.1:5000/api/health', { signal: AbortSignal.timeout(500) });
+      if (!ping.ok) throw new Error('Not ready');
+    } catch (e) {
+      console.log('  🚀 Starting in-process server on http://127.0.0.1:5000 for tests...');
+      const indexModule = await import('./index.js');
+      localServer = indexModule.default;
+      await new Promise(r => setTimeout(r, 600));
+    }
+
     // 1. Health check
     const health = await request('/api/health');
     assert('Health check endpoint is online', health.status === 200 && health.data.status === 'online');
 
-    // Clear any active sessions before test run
+    // Clear any active sessions, resets, and overrides before test run and ensure baseline timetables
     db.prepare('DELETE FROM active_sessions').run();
+    db.prepare('DELETE FROM password_resets').run();
+    db.prepare('DELETE FROM faculty_overrides').run();
+    db.prepare("DELETE FROM users WHERE register_id = '24091A3399'").run();
+    db.prepare("UPDATE users SET password_hash = ? WHERE register_id = 'FAC001'").run(bcrypt.hashSync('12345678', 10));
+    populateTimetablesData();
 
     // 2. Admin Login (admin01)
     const adminLogin = await request('/api/auth/login', {
@@ -92,7 +110,91 @@ async function runTests() {
       body: { register_id: testStudentId, password: 'studentpass123' }
     });
     assert('Student login succeeds', studentLogin.status === 200 && studentLogin.data.token);
-    const studentToken = studentLogin.data.token;
+    let studentToken = studentLogin.data.token;
+
+    // Phase 2 Security Tests
+    // Check 1: Public registration with admin role is rejected
+    const publicAdminAttempt = await request('/api/auth/register', {
+      method: 'POST',
+      headers: { 'Authorization': 'Bearer fake-admin-token' },
+      body: {
+        name: 'Attacker Admin',
+        register_id: 'HACKED_ADMIN',
+        password: 'password123',
+        role: 'admin',
+        phone: '9999999999'
+      }
+    });
+    assert('Public registration rejecting admin role (400/403)', [400, 403].includes(publicAdminAttempt.status));
+
+    // Check 2: Public registration as faculty creates pending account
+    const testFacId = 'FAC999';
+    db.prepare("DELETE FROM users WHERE register_id = ?").run(testFacId);
+    const pendingFacReg = await request('/api/auth/register', {
+      method: 'POST',
+      body: {
+        name: 'Test Dr. Pending',
+        register_id: testFacId,
+        password: 'facultypassword123',
+        role: 'faculty',
+        phone: '9848099999',
+        designation: 'Assistant Professor'
+      }
+    });
+    assert('Faculty public registration creates account with pending status (201)', pendingFacReg.status === 201 && pendingFacReg.data.status === 'pending');
+
+    // Check 3: Pending faculty cannot login before admin approval
+    const pendingLogin = await request('/api/auth/login', {
+      method: 'POST',
+      body: { register_id: testFacId, password: 'facultypassword123' }
+    });
+    assert('Pending faculty login rejected with 403 (pending approval)', pendingLogin.status === 403);
+
+    // Admin approves faculty account
+    const pendingUser = db.prepare("SELECT id FROM users WHERE register_id = ?").get(testFacId);
+    if (pendingUser) {
+      db.prepare("UPDATE users SET status = 'active' WHERE id = ?").run(pendingUser.id);
+    }
+
+    const approvedLogin = await request('/api/auth/login', {
+      method: 'POST',
+      body: { register_id: testFacId, password: 'facultypassword123' }
+    });
+    assert('Approved faculty can now login successfully (200)', approvedLogin.status === 200 && approvedLogin.data.token);
+
+    // Cleanup test faculty
+    db.prepare("DELETE FROM users WHERE register_id = ?").run(testFacId);
+
+    // Check 4: Change Password endpoint for authenticated user
+    const changePwFailWrongCurrent = await request('/api/auth/change-password', {
+      method: 'POST',
+      token: studentToken,
+      body: {
+        current_password: 'wrongpassword',
+        new_password: 'newstudentpass456',
+        confirm_password: 'newstudentpass456'
+      }
+    });
+    assert('Change password rejected on incorrect current password (401)', changePwFailWrongCurrent.status === 401);
+
+    const changePwSuccess = await request('/api/auth/change-password', {
+      method: 'POST',
+      token: studentToken,
+      body: {
+        current_password: 'studentpass123',
+        new_password: 'newstudentpass456',
+        confirm_password: 'newstudentpass456'
+      }
+    });
+    assert('Change password succeeds with valid credentials (200)', changePwSuccess.status === 200);
+
+    // Re-authenticate student with new password
+    const studentNewPwLogin = await request('/api/auth/login', {
+      method: 'POST',
+      body: { register_id: testStudentId, password: 'newstudentpass456' }
+    });
+    assert('Student logs in with changed password', studentNewPwLogin.status === 200);
+    studentToken = studentNewPwLogin.data.token;
 
     // 5. Faculty Login
     const facLogin = await request('/api/auth/login', {
@@ -762,13 +864,17 @@ async function runTests() {
     assert('Student OTP request rejected with 403 Forbidden', studentOtpRequest.status === 403);
 
     // 20. Faculty & Admin Forgot Password OTP Workflow
-    // Step 20a: Request OTP for Faculty (Dr. K. Ramesh - phone: 9848022331)
+    // Step 20a: Request OTP for Faculty (Dr. G. Kishor Kumar - phone: 9848022331)
     const facOtpReq = await request('/api/auth/forgot-password/request-otp', {
       method: 'POST',
       body: { phone: '9848022331', role: 'faculty' }
     });
-    assert('Faculty requested OTP successfully with non-revealing response', facOtpReq.status === 200 && facOtpReq.data.debug_otp);
-    const facultyOtpCode = facOtpReq.data.debug_otp;
+    assert('Faculty requested OTP successfully with non-revealing response', facOtpReq.status === 200);
+    assert('OTP response does NOT contain debug_otp (security fix)', facOtpReq.data.debug_otp === undefined);
+    
+    // Retrieve OTP from secure simulator interface
+    const facultyOtpCode = getLastDispatchedOtp('9848022331');
+    assert('SMS Simulator captured OTP for verification', Boolean(facultyOtpCode));
 
     // Step 20b: Verify OTP
     const facOtpVerify = await request('/api/auth/forgot-password/verify-otp', {
@@ -797,29 +903,34 @@ async function runTests() {
     assert('Faculty logs in with newly reset password', facNewLogin.status === 200 && facNewLogin.data.token);
 
     // Restore faculty password for continuous test repeatability
+    db.prepare('DELETE FROM password_resets WHERE phone = ?').run('9848022331');
     const restoreOtpReq = await request('/api/auth/forgot-password/request-otp', {
       method: 'POST',
       body: { phone: '9848022331', role: 'faculty' }
     });
+    const restoreOtpCode = getLastDispatchedOtp('9848022331');
     const restoreVerify = await request('/api/auth/forgot-password/verify-otp', {
       method: 'POST',
-      body: { phone: '9848022331', otp_code: restoreOtpReq.data.debug_otp, role: 'faculty' }
+      body: { phone: '9848022331', otp_code: restoreOtpCode, role: 'faculty' }
     });
-    await request('/api/auth/forgot-password/reset-password', {
+    assert('Faculty restore OTP verification succeeded', restoreVerify.status === 200 && restoreVerify.data.reset_token);
+    const resetRes = await request('/api/auth/forgot-password/reset-password', {
       method: 'POST',
       body: {
-        reset_token: restoreVerify.data.reset_token,
-        new_password: '12345678',
-        confirm_password: '12345678'
+        reset_token: restoreVerify.data?.reset_token,
+        new_password: 'facultypass123',
+        confirm_password: 'facultypass123'
       }
     });
+    assert('Faculty password restored to valid new password', resetRes.status === 200);
 
     // Re-authenticate faculty after password restoration to update active session token
     const facRestoredLogin = await request('/api/auth/login', {
       method: 'POST',
-      body: { register_id: 'FAC001', password: '12345678' }
+      body: { register_id: 'FAC001', password: 'facultypass123' }
     });
-    facToken = facRestoredLogin.data.token;
+    assert('Faculty re-login with restored password succeeded', facRestoredLogin.status === 200 && facRestoredLogin.data.token);
+    facToken = facRestoredLogin.data?.token;
 
     // 21. Student Password Management (Faculty & Admin can reset student password)
     // Step 21a: Find student DB ID for testStudentId
@@ -876,12 +987,13 @@ async function runTests() {
     const studentDeleteAuditRes = await request('/api/directory/audit-logs', { method: 'DELETE', token: studentToken });
     assert('Student clearing audit logs rejected with 403 Forbidden', studentDeleteAuditRes.status === 403);
 
-    // Admin can clear security audit logs
+    // Admin attempting to clear immutable audit logs is rejected with 403
     const adminClearAuditRes = await request('/api/directory/audit-logs', { method: 'DELETE', token: adminToken });
-    assert('Admin clearing security audit logs succeeds with 200 OK', adminClearAuditRes.status === 200);
+    assert('Admin clearing immutable security audit logs is rejected with 403 Forbidden', adminClearAuditRes.status === 403);
 
-    const postClearCheck = await request('/api/directory/audit-logs', { token: adminToken });
-    assert('Security audit logs empty after admin clear', postClearCheck.status === 200 && postClearCheck.data.count === 0);
+    // Admin can export security audit logs
+    const exportRes = await request('/api/directory/audit-logs/export', { token: adminToken });
+    assert('Admin can export security audit logs', exportRes.status === 200 && Array.isArray(exportRes.data.logs));
 
     // 23. COMPLETE REMOVAL VERIFICATION: Dr. C. Shoba Bindu & Prof. Administrator
     const verifyFacultyList = await request('/api/directory/faculty', { token: adminToken });
@@ -1108,19 +1220,22 @@ async function runTests() {
     assert('RBAC: Admin PDF faculty details includes genuine contact numbers', adminHasRealPhone);
 
     // Restore baseline timetables
-    const { populateTimetablesData } = await import('./db.js');
     populateTimetablesData();
 
-    // Clean up all audit logs created during test run so audit trail remains clean
-    await request('/api/directory/audit-logs', { method: 'DELETE', token: adminToken });
-
-    // Clean up active sessions
+    // Clean up active sessions and restore default faculty credentials
     db.prepare('DELETE FROM active_sessions').run();
+    db.prepare("UPDATE users SET password_hash = ? WHERE register_id = 'FAC001'").run(bcrypt.hashSync('12345678', 10));
 
     console.log(`\n📊 Verification Summary: ${passed} Passed, ${failed} Failed\n`);
+    if (localServer && typeof localServer.close === 'function') {
+      localServer.close();
+    }
     process.exit(failed > 0 ? 1 : 0);
   } catch (err) {
     console.error('Fatal test error:', err);
+    if (localServer && typeof localServer.close === 'function') {
+      localServer.close();
+    }
     process.exit(1);
   }
 }

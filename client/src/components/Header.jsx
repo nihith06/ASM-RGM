@@ -6,7 +6,8 @@ import {
   ShieldCheck, 
   LogOut, 
   Sparkles,
-  BookOpenCheck
+  BookOpenCheck,
+  KeyRound
 } from 'lucide-react';
 import NotificationBox from './NotificationBox';
 
@@ -14,6 +15,7 @@ export default function Header({
   user, 
   onLogout, 
   onOpenAuth, 
+  onOpenChangePassword,
   currentTab, 
   setCurrentTab 
 }) {
@@ -125,6 +127,15 @@ export default function Header({
 
                 {/* Global Notification Box: Faculty Leave Intimations */}
                 <NotificationBox user={user} />
+
+                {/* Change Password Button */}
+                <button
+                  onClick={onOpenChangePassword}
+                  title="Change Password"
+                  className="p-2 text-slate-500 hover:text-navy-900 hover:bg-slate-100 rounded-lg transition-colors border border-transparent hover:border-slate-200 cursor-pointer"
+                >
+                  <KeyRound className="w-4 h-4" />
+                </button>
 
                 {/* Logout Button */}
                 <button

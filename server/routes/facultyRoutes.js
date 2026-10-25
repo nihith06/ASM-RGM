@@ -1,7 +1,7 @@
 import express from 'express';
 import db from '../db.js';
 import { authenticateToken } from '../auth.js';
-import { getSlotTimeRange, SENIOR_YEAR_SLOTS, YEAR_1_SLOTS, PERIOD_LABELS, formatDateHuman } from '../timeUtils.js';
+import { getSlotTimeRange, SENIOR_YEAR_SLOTS, YEAR_1_SLOTS, PERIOD_LABELS, formatDateHuman, getKolkataDate } from '../timeUtils.js';
 import { broadcastTimetableUpdate } from '../services/realtimeService.js';
 
 const router = express.Router();
@@ -361,7 +361,7 @@ router.post('/overrides', authenticateToken, (req, res) => {
 
     let notification = null;
     if (normStatus === 'leave') {
-      const effectiveDate = date || new Date().toISOString().split('T')[0];
+      const effectiveDate = date || getKolkataDate();
       const formattedDate = formatDateHuman(effectiveDate);
       const slotTime = PERIOD_LABELS[p] || `Period ${p}`;
       const notificationMessage = `${userObj.name} has marked Leave for ${formattedDate}, P${p} (${slotTime}).`;
@@ -411,7 +411,7 @@ router.delete('/overrides/:day/:period', authenticateToken, (req, res) => {
       WHERE faculty_id = ? AND day = ? AND period = ?
     `).run(facultyId, day, p);
 
-    const effectiveDate = reqDate || (existingOv && existingOv.override_date) || new Date().toISOString().split('T')[0];
+    const effectiveDate = reqDate || (existingOv && existingOv.override_date) || getKolkataDate();
     const formattedDate = formatDateHuman(effectiveDate);
     const slotTime = PERIOD_LABELS[p] || `Period ${p}`;
 

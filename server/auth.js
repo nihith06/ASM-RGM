@@ -1,9 +1,10 @@
 import jwt from 'jsonwebtoken';
-import { getActiveSessionById, touchSession } from './db.js';
-
-const JWT_SECRET = process.env.JWT_SECRET || 'rgmcet_aiml_academic_schedule_secret_key_2026';
+import config from './env.js';
+import db, { getActiveSessionById, touchSession } from './db.js';
 
 export function generateToken(user, sessionId = null) {
+  const expiresIn = (user.role === 'faculty' || user.role === 'admin') ? '12h' : '7d';
+
   return jwt.sign(
     {
       id: user.id,
@@ -15,34 +16,56 @@ export function generateToken(user, sessionId = null) {
       designation: user.designation,
       session_id: sessionId || user.session_id || null
     },
-    JWT_SECRET,
-    { expiresIn: '7d' }
+    config.JWT_SECRET,
+    { expiresIn }
   );
 }
 
 export function authenticateToken(req, res, next) {
   const authHeader = req.headers['authorization'];
-  const token = (authHeader && authHeader.split(' ')[1]) || req.query?.token;
+  const token = authHeader && authHeader.split(' ')[1];
 
   if (!token) {
     return res.status(401).json({ error: 'Authentication token required' });
   }
 
-  jwt.verify(token, JWT_SECRET, (err, user) => {
+  jwt.verify(token, config.JWT_SECRET, (err, decodedUser) => {
     if (err) {
       return res.status(403).json({ error: 'Invalid or expired token' });
     }
 
-    // For Faculty and Admin: enforce active session validity
-    if ((user.role === 'faculty' || user.role === 'admin') && user.session_id) {
-      const activeSession = getActiveSessionById(user.session_id, 35000);
+    // Verify user still exists in the database and is currently active
+    const dbUser = db.prepare(`
+      SELECT id, register_id, name, role, phone, year, department, designation, status, must_change_password 
+      FROM users 
+      WHERE id = ?
+    `).get(decodedUser.id);
+
+    if (!dbUser) {
+      return res.status(401).json({ error: 'User account has been deleted or no longer exists.' });
+    }
+
+    if (dbUser.status !== 'active') {
+      return res.status(403).json({ 
+        error: dbUser.status === 'pending'
+          ? 'Your account is pending administrator approval.'
+          : 'Your account has been deactivated or suspended.'
+      });
+    }
+
+    // For Faculty and Admin with a session_id: enforce active session validity
+    if ((dbUser.role === 'faculty' || dbUser.role === 'admin') && decodedUser.session_id) {
+      const activeSession = getActiveSessionById(decodedUser.session_id, 45000);
       if (!activeSession) {
         return res.status(401).json({ error: 'Session has expired or ended. Please sign in again.' });
       }
-      touchSession(user.session_id);
+      touchSession(decodedUser.session_id);
     }
 
-    req.user = user;
+    req.user = {
+      ...decodedUser,
+      ...dbUser
+    };
     next();
   });
 }

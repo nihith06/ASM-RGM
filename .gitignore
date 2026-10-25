@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Production Build
+dist/
+build/
+client/dist/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# SQLite Temporary and Test Databases
+server/data/temp-test*
+server/data/backup-pre-hardening.db
+*.db-journal
+
+# OS & Editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

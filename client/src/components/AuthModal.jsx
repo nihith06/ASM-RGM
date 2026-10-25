@@ -168,7 +168,9 @@ export default function AuthModal({
         // Registration
         if (!formData.name.trim()) throw new Error('Please enter your full name.');
         if (!formData.register_id.trim()) throw new Error('Please enter your Register ID or Employee ID.');
-        if (formData.password.length < 6) throw new Error('Password must be at least 6 characters.');
+        if (formData.password.length < 8 || !/[A-Za-z]/.test(formData.password) || !/[0-9]/.test(formData.password)) {
+          throw new Error('Password must be at least 8 characters and contain both letters and numbers.');
+        }
         
         const payload = {
           name: formData.name.trim(),
@@ -180,11 +182,19 @@ export default function AuthModal({
         };
 
         const res = await authApi.register(payload);
-        setSuccessMsg('Registration successful! Logging you in...');
-        setTimeout(() => {
-          onAuthSuccess(res.token, res.user);
-          onClose();
-        }, 1000);
+        if (res.status === 'pending' || !res.token) {
+          setSuccessMsg(res.message || 'Registration submitted! Your faculty account is pending administrator approval before sign in.');
+          setTimeout(() => {
+            setMode('login');
+            onClose();
+          }, 3000);
+        } else {
+          setSuccessMsg('Registration successful! Logging you in...');
+          setTimeout(() => {
+            onAuthSuccess(res.token, res.user);
+            onClose();
+          }, 1000);
+        }
       }
     } catch (err) {
       setError(err.message || 'Authentication failed. Please check your credentials.');

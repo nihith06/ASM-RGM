@@ -2,6 +2,7 @@ import express from 'express';
 import bcrypt from 'bcryptjs';
 import crypto from 'node:crypto';
 import jwt from 'jsonwebtoken';
+import config from '../env.js';
 import db, { 
   getActiveSessionByUserId, 
   createActiveSession, 
@@ -12,10 +13,40 @@ import db, {
   cleanStaleSessions 
 } from '../db.js';
 import { generateToken, authenticateToken, requireAdmin } from '../auth.js';
+import { sendOtpSms } from '../services/smsService.js';
 
 const router = express.Router();
 
-// Registration: Students, Faculty, and Admin (admins can register new admins)
+function validatePasswordStrength(password) {
+  if (!password || typeof password !== 'string') return 'Password is required.';
+  if (password.length < 8) return 'Password must be at least 8 characters long.';
+  if (!/[A-Za-z]/.test(password) || !/[0-9]/.test(password)) {
+    return 'Password must contain at least one letter and one number.';
+  }
+  return null;
+}
+
+function validateRegisterId(id) {
+  if (!id || typeof id !== 'string') return false;
+  const clean = id.trim();
+  return clean.length >= 3 && clean.length <= 30 && /^[A-Za-z0-9_-]+$/.test(clean);
+}
+
+function validateName(name) {
+  if (!name || typeof name !== 'string') return false;
+  const clean = name.trim();
+  return clean.length >= 2 && clean.length <= 100;
+}
+
+function validatePhone(phone) {
+  if (!phone) return true; // optional
+  const clean = String(phone).trim().replace(/[^0-9]/g, '');
+  return clean.length === 10;
+}
+
+// Registration: Students & Faculty (Public)
+// SECURITY RULE: Administrators can NEVER be created via public self-registration.
+// Faculty accounts are created with status 'pending' and require Admin activation.
 router.post('/register', (req, res) => {
   try {
     const { name, register_id, password, role, phone, year, designation } = req.body;
@@ -24,18 +55,37 @@ router.post('/register', (req, res) => {
       return res.status(400).json({ error: 'Name, Register ID / Employee ID, password, and role are required.' });
     }
 
-    const cleanId = register_id.trim().toUpperCase();
     const cleanRole = role.trim().toLowerCase();
 
-    // Check permissions for admin creation
+    // STRICT BLOCK: Public registration cannot create admin accounts under any circumstance
     if (cleanRole === 'admin') {
-      const authHeader = req.headers['authorization'];
-      if (!authHeader) {
-        return res.status(403).json({ error: 'Self-registration is not permitted for Administrator role. Only existing admins can create new admin accounts.' });
-      }
-    } else if (!['student', 'faculty'].includes(cleanRole)) {
+      return res.status(403).json({
+        error: 'Administrator accounts cannot be self-registered. They must be created by an existing administrator via the admin portal.'
+      });
+    }
+
+    if (!['student', 'faculty'].includes(cleanRole)) {
       return res.status(400).json({ error: 'Invalid role. Role must be student or faculty.' });
     }
+
+    if (!validateName(name)) {
+      return res.status(400).json({ error: 'Name must be between 2 and 100 characters.' });
+    }
+
+    if (!validateRegisterId(register_id)) {
+      return res.status(400).json({ error: 'Register ID / Employee ID must be 3-30 alphanumeric characters.' });
+    }
+
+    const pwError = validatePasswordStrength(password);
+    if (pwError) {
+      return res.status(400).json({ error: pwError });
+    }
+
+    if (phone && !validatePhone(phone)) {
+      return res.status(400).json({ error: 'Please enter a valid 10-digit mobile number.' });
+    }
+
+    const cleanId = register_id.trim().toUpperCase();
 
     // Students must specify year (1st-4th)
     let studentYear = null;
@@ -55,41 +105,48 @@ router.post('/register', (req, res) => {
     }
 
     const passwordHash = bcrypt.hashSync(password, 10);
-    const userDesignation = designation ? designation.trim() : (cleanRole === 'admin' ? 'Administrator' : cleanRole === 'faculty' ? 'Faculty Member' : 'Student');
+    const userDesignation = designation ? designation.trim() : (cleanRole === 'faculty' ? 'Faculty Member' : 'Student');
+    
+    // SECURITY POLICY:
+    // Students get active status immediately.
+    // Faculty accounts start as 'pending' until approved by an administrator to protect student PII.
+    const initialStatus = cleanRole === 'faculty' ? 'pending' : 'active';
 
     const stmt = db.prepare(`
-      INSERT INTO users (register_id, name, password_hash, role, phone, year, department, designation, status)
-      VALUES (?, ?, ?, ?, ?, ?, 'AIML', ?, 'active')
+      INSERT INTO users (register_id, name, password_hash, role, phone, year, department, designation, status, must_change_password)
+      VALUES (?, ?, ?, ?, ?, ?, 'AIML', ?, ?, 0)
     `);
 
-    const info = stmt.run(cleanId, name.trim(), passwordHash, cleanRole, phone ? phone.trim() : null, studentYear, userDesignation);
+    const info = stmt.run(cleanId, name.trim(), passwordHash, cleanRole, phone ? phone.trim() : null, studentYear, userDesignation, initialStatus);
     const newUserId = info.lastInsertRowid;
 
-    // Record in audit log if created by admin
-    const authHeader = req.headers['authorization'];
-    if (authHeader) {
-      try {
-        const decoded = jwt.decode(authHeader.split(' ')[1]);
-        if (decoded && decoded.id) {
-          db.prepare(`
-            INSERT INTO audit_logs (action, performed_by_id, target_user_id, details)
-            VALUES ('ADMIN_CREATE_USER', ?, ?, ?)
-          `).run(decoded.id, newUserId, `Admin created new ${cleanRole}: ${cleanId} (${name.trim()})`);
-        }
-      } catch (e) {}
-    }
+    try {
+      db.prepare(`
+        INSERT INTO audit_logs (action, target_user_id, details)
+        VALUES ('USER_REGISTER', ?, ?)
+      `).run(newUserId, `New ${cleanRole} registered: ${cleanId} (${name.trim()}) with status: ${initialStatus}`);
+    } catch (e) {}
 
     const user = db.prepare('SELECT id, register_id, name, role, phone, year, department, designation, status FROM users WHERE id = ?').get(newUserId);
-    const token = generateToken(user);
 
+    if (cleanRole === 'faculty') {
+      return res.status(201).json({
+        message: 'Faculty registration submitted successfully! Your account is pending administrator approval before you can sign in.',
+        status: 'pending',
+        user
+      });
+    }
+
+    // Students receive active token immediately
+    const token = generateToken(user);
     return res.status(201).json({
-      message: `${cleanRole.charAt(0).toUpperCase() + cleanRole.slice(1)} registered successfully!`,
+      message: 'Student registered successfully!',
       token,
       user
     });
   } catch (error) {
     console.error('Registration error:', error);
-    return res.status(500).json({ error: 'Failed to complete registration: ' + error.message });
+    return res.status(500).json({ error: 'Failed to complete registration.' });
   }
 });
 
@@ -102,30 +159,50 @@ router.post('/register-admin', authenticateToken, requireAdmin, (req, res) => {
       return res.status(400).json({ error: 'Name, Admin ID, and password are required.' });
     }
 
-    const cleanId = register_id.trim();
-    const existing = db.prepare('SELECT id FROM users WHERE UPPER(register_id) = UPPER(?)').get(cleanId);
+    if (!validateName(name)) {
+      return res.status(400).json({ error: 'Name must be between 2 and 100 characters.' });
+    }
+
+    if (!validateRegisterId(register_id)) {
+      return res.status(400).json({ error: 'Admin ID must be 3-30 alphanumeric characters.' });
+    }
+
+    const pwError = validatePasswordStrength(password);
+    if (pwError) {
+      return res.status(400).json({ error: pwError });
+    }
+
+    if (phone && !validatePhone(phone)) {
+      return res.status(400).json({ error: 'Please enter a valid 10-digit mobile number.' });
+    }
+
+    const cleanId = register_id.trim().toUpperCase();
+    const existing = db.prepare('SELECT id FROM users WHERE UPPER(register_id) = ?').get(cleanId);
     if (existing) {
       return res.status(409).json({ error: `Admin ID "${cleanId}" is already taken.` });
     }
 
     const passwordHash = bcrypt.hashSync(password, 10);
     const stmt = db.prepare(`
-      INSERT INTO users (register_id, name, password_hash, role, phone, department, designation, status)
-      VALUES (?, ?, ?, 'admin', ?, 'AIML', ?, 'active')
+      INSERT INTO users (register_id, name, password_hash, role, phone, department, designation, status, must_change_password)
+      VALUES (?, ?, ?, 'admin', ?, 'AIML', ?, 'active', 0)
     `);
 
     const info = stmt.run(cleanId, name.trim(), passwordHash, phone ? phone.trim() : null, designation ? designation.trim() : 'Administrator');
     const newUserId = info.lastInsertRowid;
 
-    db.prepare(`
-      INSERT INTO audit_logs (action, performed_by_id, target_user_id, details)
-      VALUES ('ADMIN_CREATE_ADMIN', ?, ?, ?)
-    `).run(req.user.id, newUserId, `Admin ${req.user.name} created new Admin account: ${cleanId} (${name.trim()})`);
+    try {
+      db.prepare(`
+        INSERT INTO audit_logs (action, performed_by_id, target_user_id, details)
+        VALUES ('ADMIN_CREATE_ADMIN', ?, ?, ?)
+      `).run(req.user.id, newUserId, `Admin ${req.user.name} created new Admin account: ${cleanId} (${name.trim()})`);
+    } catch (e) {}
 
     const newAdmin = db.prepare('SELECT id, register_id, name, role, phone, department, designation, status FROM users WHERE id = ?').get(newUserId);
     res.status(201).json({ message: 'Administrator account created successfully!', admin: newAdmin });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    console.error('Register admin error:', error);
+    res.status(500).json({ error: 'Failed to create administrator account.' });
   }
 });
 
@@ -142,16 +219,36 @@ router.post('/login', (req, res) => {
     const user = db.prepare('SELECT * FROM users WHERE UPPER(register_id) = UPPER(?)').get(cleanId);
 
     if (!user) {
+      try {
+        db.prepare(`
+          INSERT INTO audit_logs (action, details)
+          VALUES ('LOGIN_FAILED', ?)
+        `).run(`Failed login attempt for unknown ID: ${cleanId} from IP: ${req.ip}`);
+      } catch (e) {}
       return res.status(401).json({ error: 'Invalid Register ID or password.' });
     }
 
     // Check account status
+    if (user.status === 'pending') {
+      return res.status(403).json({
+        error: 'Your account is pending administrator approval. Please contact the department administrator.'
+      });
+    }
+
     if (user.status && user.status !== 'active') {
-      return res.status(403).json({ error: 'Account has been deactivated or suspended. Please contact the administrator.' });
+      return res.status(403).json({
+        error: 'Account has been deactivated or suspended. Please contact the administrator.'
+      });
     }
 
     const isMatch = bcrypt.compareSync(password, user.password_hash);
     if (!isMatch) {
+      try {
+        db.prepare(`
+          INSERT INTO audit_logs (action, target_user_id, details)
+          VALUES ('LOGIN_FAILED', ?, ?)
+        `).run(user.id, `Failed password attempt for user: ${user.register_id} from IP: ${req.ip}`);
+      } catch (e) {}
       return res.status(401).json({ error: 'Invalid Register ID or password.' });
     }
 
@@ -165,8 +262,8 @@ router.post('/login', (req, res) => {
     // Single Active Login Check for Faculty & Admin
     let activeSessionInfo = null;
     if (user.role === 'faculty' || user.role === 'admin') {
-      cleanStaleSessions(25000);
-      const existingSession = getActiveSessionByUserId(user.id, 25000);
+      cleanStaleSessions(35000);
+      const existingSession = getActiveSessionByUserId(user.id, 35000);
       if (existingSession) {
         return res.status(409).json({
           error: 'This account is already logged in on another device or browser. Please log out from the existing session before signing in again.'
@@ -185,19 +282,84 @@ router.post('/login', (req, res) => {
       department: user.department,
       designation: user.designation,
       status: user.status || 'active',
+      must_change_password: Boolean(user.must_change_password),
       session_id: activeSessionInfo ? activeSessionInfo.sessionId : null
     };
 
     const token = generateToken(userSafe, activeSessionInfo ? activeSessionInfo.sessionId : null);
+
+    try {
+      db.prepare(`
+        INSERT INTO audit_logs (action, performed_by_id, target_user_id, details)
+        VALUES ('LOGIN_SUCCESS', ?, ?, ?)
+      `).run(user.id, user.id, `User ${user.name} (${user.role.toUpperCase()}) logged in successfully from IP: ${req.ip}`);
+    } catch (e) {}
+
     return res.json({
       message: 'Login successful',
       token,
       user: userSafe,
+      must_change_password: Boolean(user.must_change_password),
       session_id: activeSessionInfo ? activeSessionInfo.sessionId : null
     });
   } catch (error) {
     console.error('Login error:', error);
-    return res.status(500).json({ error: 'Failed to process login: ' + error.message });
+    return res.status(500).json({ error: 'Failed to process login.' });
+  }
+});
+
+// Authenticated user password rotation
+router.post('/change-password', authenticateToken, (req, res) => {
+  try {
+    const { current_password, new_password, confirm_password } = req.body;
+
+    if (!current_password || !new_password || !confirm_password) {
+      return res.status(400).json({ error: 'Current password, new password, and confirmation are required.' });
+    }
+
+    if (new_password !== confirm_password) {
+      return res.status(400).json({ error: 'New password and confirmation do not match.' });
+    }
+
+    const pwError = validatePasswordStrength(new_password);
+    if (pwError) {
+      return res.status(400).json({ error: pwError });
+    }
+
+    const user = db.prepare('SELECT id, name, register_id, role, password_hash FROM users WHERE id = ?').get(req.user.id);
+    if (!user) {
+      return res.status(404).json({ error: 'User account not found.' });
+    }
+
+    const isMatch = bcrypt.compareSync(current_password, user.password_hash);
+    if (!isMatch) {
+      return res.status(401).json({ error: 'Current password is incorrect.' });
+    }
+
+    if (current_password === new_password) {
+      return res.status(400).json({ error: 'New password must be different from your current password.' });
+    }
+
+    const newHash = bcrypt.hashSync(new_password, 10);
+    db.prepare('UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?').run(newHash, user.id);
+
+    // Invalidate any active sessions on other tabs
+    invalidateUserSessions(user.id);
+
+    try {
+      db.prepare(`
+        INSERT INTO audit_logs (action, performed_by_id, target_user_id, details)
+        VALUES ('USER_CHANGE_PASSWORD', ?, ?, ?)
+      `).run(user.id, user.id, `User ${user.name} (${user.register_id}) updated account password.`);
+    } catch (e) {}
+
+    return res.json({
+      success: true,
+      message: 'Password changed successfully. Please log in again with your new credentials.'
+    });
+  } catch (error) {
+    console.error('Change password error:', error);
+    return res.status(500).json({ error: 'Failed to change password.' });
   }
 });
 
@@ -223,7 +385,7 @@ router.post('/logout', (req, res) => {
     }
     return res.json({ message: 'Logged out successfully' });
   } catch (error) {
-    return res.status(500).json({ error: error.message });
+    return res.status(500).json({ error: 'Logout failed.' });
   }
 });
 
@@ -235,7 +397,7 @@ router.post('/session/heartbeat', authenticateToken, (req, res) => {
     }
     return res.json({ success: true, timestamp: Date.now() });
   } catch (error) {
-    return res.status(500).json({ error: error.message });
+    return res.status(500).json({ error: 'Heartbeat update failed.' });
   }
 });
 
@@ -256,7 +418,7 @@ router.post('/session/unload', (req, res) => {
     }
     return res.json({ success: true });
   } catch (error) {
-    return res.status(500).json({ error: error.message });
+    return res.status(500).json({ error: 'Session unload failed.' });
   }
 });
 
@@ -266,7 +428,7 @@ router.post('/session/unload', (req, res) => {
 // ============================================================================
 
 // 1. Request OTP
-router.post('/forgot-password/request-otp', (req, res) => {
+router.post('/forgot-password/request-otp', async (req, res) => {
   try {
     const { phone, role } = req.body;
 
@@ -307,7 +469,7 @@ router.post('/forgot-password/request-otp', (req, res) => {
 
     // Generic response message that doesn't reveal whether user exists
     const genericResponse = {
-      message: `If this mobile number is associated with an active ${cleanRole === 'admin' ? 'Administrator' : 'Faculty'} account, a 6-digit verification code has been dispatched.`,
+      message: `If this mobile number is associated with an active ${cleanRole === 'admin' ? 'Administrator' : 'Faculty'} account, a verification code has been dispatched.`,
       expires_in: 600
     };
 
@@ -319,38 +481,41 @@ router.post('/forgot-password/request-otp', (req, res) => {
     `).get(cleanPhone, cleanRole);
 
     if (!matchedUser || matchedUser.status === 'suspended') {
-      // Return generic message without revealing that no user was found
       return res.json(genericResponse);
     }
 
-    // Generate 6-digit OTP
-    const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
+    // Generate 6-digit OTP using cryptographically secure PRNG
+    const otpCode = crypto.randomInt(100000, 1000000).toString();
+    const otpHash = crypto.createHash('sha256').update(otpCode + config.JWT_SECRET).digest('hex');
 
     // Expire any existing unverified OTPs for this user
     db.prepare('DELETE FROM password_resets WHERE user_id = ? AND verified = 0').run(matchedUser.id);
 
-    // Store in password_resets table with 10-minute expiry
+    // Store in password_resets table with hashed OTP and 10-minute expiry
     db.prepare(`
-      INSERT INTO password_resets (phone, otp_code, role, user_id, attempts, verified, expires_at)
-      VALUES (?, ?, ?, ?, 0, 0, datetime('now', '+10 minutes'))
-    `).run(cleanPhone, otpCode, cleanRole, matchedUser.id);
+      INSERT INTO password_resets (phone, otp_hash, otp_code, role, user_id, attempts, verified, expires_at)
+      VALUES (?, ?, '', ?, ?, 0, 0, datetime('now', '+10 minutes'))
+    `).run(cleanPhone, otpHash, cleanRole, matchedUser.id);
 
-    console.log(`\n========================================================`);
-    console.log(`📱 [SMS OTP GATEWAY SIMULATOR]`);
-    console.log(`Recipient: ${matchedUser.name} (${cleanRole.toUpperCase()} - ${matchedUser.register_id})`);
-    console.log(`Phone: ${cleanPhone}`);
-    console.log(`One-Time Password (OTP): ${otpCode}`);
-    console.log(`Valid for: 10 minutes`);
-    console.log(`========================================================\n`);
-
-    // In development / demo environment, also return debug_otp for easy verification
-    return res.json({
-      ...genericResponse,
-      debug_otp: otpCode
+    // Dispatch via SMS gateway provider
+    const smsResult = await sendOtpSms({
+      phone: cleanPhone,
+      otp: otpCode,
+      recipientName: matchedUser.name,
+      role: cleanRole
     });
+
+    if (!smsResult.success && config.isProduction) {
+      return res.status(503).json({
+        error: smsResult.error || 'SMS notification service unavailable. Please contact an administrator.'
+      });
+    }
+
+    // Security: NEVER return debug_otp in any environment!
+    return res.json(genericResponse);
   } catch (error) {
     console.error('Request OTP error:', error);
-    return res.status(500).json({ error: error.message });
+    return res.status(500).json({ error: 'Failed to process OTP request.' });
   }
 });
 
@@ -390,12 +555,15 @@ router.post('/forgot-password/verify-otp', (req, res) => {
       });
     }
 
-    // Validate code
-    if (record.otp_code !== cleanOtp) {
+    // Validate hashed code (with backward fallback to legacy plaintext code if present)
+    const candidateHash = crypto.createHash('sha256').update(cleanOtp + config.JWT_SECRET).digest('hex');
+    const isValid = (record.otp_hash && record.otp_hash === candidateHash) || (record.otp_code && record.otp_code === cleanOtp);
+
+    if (!isValid) {
       db.prepare('UPDATE password_resets SET attempts = attempts + 1 WHERE id = ?').run(record.id);
       const remainingAttempts = 5 - (record.attempts + 1);
       return res.status(400).json({
-        error: `Invalid OTP code. ${remainingAttempts} attempt(s) remaining.`
+        error: `Invalid verification code. ${remainingAttempts} attempt(s) remaining.`
       });
     }
 
@@ -413,7 +581,7 @@ router.post('/forgot-password/verify-otp', (req, res) => {
     });
   } catch (error) {
     console.error('Verify OTP error:', error);
-    return res.status(500).json({ error: error.message });
+    return res.status(500).json({ error: 'Failed to verify code.' });
   }
 });
 
@@ -426,8 +594,9 @@ router.post('/forgot-password/reset-password', (req, res) => {
       return res.status(400).json({ error: 'Reset session token is missing. Please restart verification.' });
     }
 
-    if (!new_password || new_password.length < 6) {
-      return res.status(400).json({ error: 'New password must be at least 6 characters.' });
+    const pwError = validatePasswordStrength(new_password);
+    if (pwError) {
+      return res.status(400).json({ error: pwError });
     }
 
     if (new_password !== confirm_password) {
@@ -455,8 +624,8 @@ router.post('/forgot-password/reset-password', (req, res) => {
     // Hash new password securely
     const passwordHash = bcrypt.hashSync(new_password, 10);
 
-    // Update password in users table
-    db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(passwordHash, targetUser.id);
+    // Update password in users table and clear forced change flag
+    db.prepare('UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?').run(passwordHash, targetUser.id);
 
     // Invalidate reset token immediately
     db.prepare('DELETE FROM password_resets WHERE id = ?').run(resetRecord.id);
@@ -465,10 +634,12 @@ router.post('/forgot-password/reset-password', (req, res) => {
     invalidateUserSessions(targetUser.id);
 
     // Log action to audit_logs
-    db.prepare(`
-      INSERT INTO audit_logs (action, performed_by_id, target_user_id, details)
-      VALUES ('SELF_PASSWORD_RESET_OTP', ?, ?, ?)
-    `).run(targetUser.id, targetUser.id, `User ${targetUser.name} (${targetUser.register_id}) reset password via verified mobile OTP.`);
+    try {
+      db.prepare(`
+        INSERT INTO audit_logs (action, performed_by_id, target_user_id, details)
+        VALUES ('SELF_PASSWORD_RESET_OTP', ?, ?, ?)
+      `).run(targetUser.id, targetUser.id, `User ${targetUser.name} (${targetUser.register_id}) reset password via verified mobile OTP.`);
+    } catch (e) {}
 
     return res.json({
       message: 'Password reset successfully! You can now log in with your new password.',
@@ -476,22 +647,21 @@ router.post('/forgot-password/reset-password', (req, res) => {
     });
   } catch (error) {
     console.error('Reset password error:', error);
-    return res.status(500).json({ error: error.message });
+    return res.status(500).json({ error: 'Failed to reset password.' });
   }
 });
 
 // Get current session user
 router.get('/me', authenticateToken, (req, res) => {
   try {
-    const user = db.prepare('SELECT id, register_id, name, role, phone, year, department, designation, status FROM users WHERE id = ?').get(req.user.id);
+    const user = db.prepare('SELECT id, register_id, name, role, phone, year, department, designation, status, must_change_password FROM users WHERE id = ?').get(req.user.id);
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
     }
     return res.json({ user });
   } catch (error) {
-    return res.status(500).json({ error: error.message });
+    return res.status(500).json({ error: 'Failed to retrieve profile.' });
   }
 });
 
 export default router;
-

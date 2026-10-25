@@ -137,6 +137,11 @@ export const authApi = {
       method: 'POST',
       body: { reset_token, new_password, confirm_password }
     }),
+  changePassword: (current_password, new_password, confirm_password) =>
+    apiRequest('/auth/change-password', {
+      method: 'POST',
+      body: { current_password, new_password, confirm_password }
+    }),
   getMe: () => apiRequest('/auth/me'),
   logout: () => {
     const user = getStoredUser();
@@ -222,17 +227,23 @@ export const timetableApi = {
 };
 
 // Real-time EventSource subscriber for timetable updates
+// Uses secure single-use ticket pattern to avoid leaking permanent JWT in URLs
 export function subscribeToTimetableEvents(onEvent, onError) {
   const token = getStoredToken();
   if (!token) return () => {};
 
-  const url = `${API_BASE}/timetables/events?token=${encodeURIComponent(token)}`;
   let eventSource = null;
   let isClosed = false;
+  let reconnectTimeout = null;
 
-  function connect() {
+  async function connect() {
     if (isClosed) return;
     try {
+      // 1. Request short-lived single-use SSE ticket
+      const ticketRes = await apiRequest('/timetables/events/ticket', { method: 'POST' });
+      if (!ticketRes || !ticketRes.ticket || isClosed) return;
+
+      const url = `${API_BASE}/timetables/events?ticket=${encodeURIComponent(ticketRes.ticket)}`;
       eventSource = new EventSource(url);
 
       eventSource.onmessage = (e) => {
@@ -243,9 +254,7 @@ export function subscribeToTimetableEvents(onEvent, onError) {
             window.dispatchEvent(new CustomEvent('rgmcet_notifications_updated'));
             if (onEvent) onEvent(data);
           }
-        } catch (err) {
-          // ignore
-        }
+        } catch (err) {}
       };
 
       eventSource.onerror = (err) => {
@@ -255,12 +264,14 @@ export function subscribeToTimetableEvents(onEvent, onError) {
         }
         if (onError) onError(err);
         if (!isClosed) {
-          setTimeout(connect, 3000);
+          reconnectTimeout = setTimeout(connect, 3000);
         }
       };
     } catch (err) {
       if (onError) onError(err);
-      if (!isClosed) setTimeout(connect, 3000);
+      if (!isClosed) {
+        reconnectTimeout = setTimeout(connect, 3000);
+      }
     }
   }
 
@@ -268,6 +279,7 @@ export function subscribeToTimetableEvents(onEvent, onError) {
 
   return () => {
     isClosed = true;
+    if (reconnectTimeout) clearTimeout(reconnectTimeout);
     if (eventSource) {
       eventSource.close();
       eventSource = null;

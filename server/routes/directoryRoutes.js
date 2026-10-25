@@ -2,6 +2,7 @@ import express from 'express';
 import bcrypt from 'bcryptjs';
 import db from '../db.js';
 import { authenticateToken, requireFacultyOrAdmin, requireAdmin } from '../auth.js';
+import { getKolkataDate } from '../timeUtils.js';
 
 const router = express.Router();
 
@@ -37,15 +38,6 @@ router.get('/students', authenticateToken, requireFacultyOrAdmin, (req, res) => 
   }
 });
 
-// Helper to get local date string YYYY-MM-DD
-function getLocalDateString() {
-  const d = new Date();
-  const year = d.getFullYear();
-  const month = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
-}
-
 // GET Faculty Directory
 // PRIVACY RULE: Only logged-in Faculty members and Admin can access!
 // Status logic:
@@ -57,10 +49,10 @@ function getLocalDateString() {
 router.get('/faculty', authenticateToken, requireFacultyOrAdmin, (req, res) => {
   try {
     const { search, date: reqDate } = req.query;
-    // Determine calendar date (YYYY-MM-DD)
+    // Determine calendar date (YYYY-MM-DD) strictly in Asia/Kolkata
     const todayStr = (reqDate && /^\d{4}-\d{2}-\d{2}$/.test(reqDate.trim())) 
       ? reqDate.trim() 
-      : getLocalDateString();
+      : getKolkataDate();
 
     let query = `
       SELECT id, register_id, name, phone, department, designation, qualification, status, role, created_at
@@ -259,9 +251,17 @@ router.delete('/users/:id', authenticateToken, requireAdmin, (req, res) => {
     }
 
     db.prepare('DELETE FROM users WHERE id = ?').run(userId);
+
+    try {
+      db.prepare(`
+        INSERT INTO audit_logs (action, performed_by_id, details)
+        VALUES ('ADMIN_DELETE_USER', ?, ?)
+      `).run(req.user.id, `Admin ${req.user.name} removed user: ${existing.name} (${existing.register_id}, role: ${existing.role})`);
+    } catch (e) {}
+
     res.json({ message: `User "${existing.name}" (${existing.register_id}) has been removed.` });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Failed to delete user.' });
   }
 });
 
@@ -272,8 +272,8 @@ router.post('/students/:id/reset-password', authenticateToken, requireFacultyOrA
     const studentId = parseInt(req.params.id, 10);
     const { new_password } = req.body;
 
-    if (!new_password || new_password.length < 6) {
-      return res.status(400).json({ error: 'New password must be at least 6 characters.' });
+    if (!new_password || new_password.length < 8 || !/[A-Za-z]/.test(new_password) || !/[0-9]/.test(new_password)) {
+      return res.status(400).json({ error: 'New password must be at least 8 characters and contain both letters and numbers.' });
     }
 
     const student = db.prepare('SELECT id, register_id, name, role FROM users WHERE id = ?').get(studentId);
@@ -288,20 +288,22 @@ router.post('/students/:id/reset-password', authenticateToken, requireFacultyOrA
     // Hash new password securely
     const passwordHash = bcrypt.hashSync(new_password, 10);
 
-    // Update password in database
-    db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(passwordHash, student.id);
+    // Update password in database and set must_change_password flag
+    db.prepare('UPDATE users SET password_hash = ?, must_change_password = 1 WHERE id = ?').run(passwordHash, student.id);
 
     // Record action in audit log
     const actionName = req.user.role === 'admin' ? 'ADMIN_RESET_STUDENT_PASSWORD' : 'FACULTY_RESET_STUDENT_PASSWORD';
-    db.prepare(`
-      INSERT INTO audit_logs (action, performed_by_id, target_user_id, details)
-      VALUES (?, ?, ?, ?)
-    `).run(
-      actionName,
-      req.user.id,
-      student.id,
-      `Password reset for Student: ${student.name} (${student.register_id}) by ${req.user.name} (${req.user.role.toUpperCase()})`
-    );
+    try {
+      db.prepare(`
+        INSERT INTO audit_logs (action, performed_by_id, target_user_id, details)
+        VALUES (?, ?, ?, ?)
+      `).run(
+        actionName,
+        req.user.id,
+        student.id,
+        `Password reset for Student: ${student.name} (${student.register_id}) by ${req.user.name} (${req.user.role.toUpperCase()})`
+      );
+    } catch (e) {}
 
     res.json({
       message: `Password for student "${student.name}" (${student.register_id}) has been reset successfully!`,
@@ -309,7 +311,7 @@ router.post('/students/:id/reset-password', authenticateToken, requireFacultyOrA
     });
   } catch (error) {
     console.error('Student password reset error:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Failed to reset student password.' });
   }
 });
 
@@ -330,18 +332,37 @@ router.get('/audit-logs', authenticateToken, requireAdmin, (req, res) => {
 
     res.json({ count: logs.length, logs });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Failed to retrieve audit logs.' });
   }
 });
 
-// DELETE Audit Logs (Admin only)
-router.delete('/audit-logs', authenticateToken, requireAdmin, (req, res) => {
+// GET Export Audit Logs (Admin only)
+router.get('/audit-logs/export', authenticateToken, requireAdmin, (req, res) => {
   try {
-    const deleted = db.prepare('DELETE FROM audit_logs').run();
-    res.json({ message: 'Security Audit Trail cleared successfully', cleared_count: deleted.changes });
+    const logs = db.prepare(`
+      SELECT 
+        a.id, a.action, a.details, a.created_at,
+        p.name as performed_by_name, p.register_id as performed_by_id, p.role as performed_by_role,
+        t.name as target_user_name, t.register_id as target_user_id
+      FROM audit_logs a
+      LEFT JOIN users p ON a.performed_by_id = p.id
+      LEFT JOIN users t ON a.target_user_id = t.id
+      ORDER BY a.created_at DESC
+    `).all();
+
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Content-Disposition', 'attachment; filename="asms_audit_logs.json"');
+    res.json({ exported_at: new Date().toISOString(), total_records: logs.length, logs });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Failed to export audit logs.' });
   }
+});
+
+// DELETE Audit Logs (Forbidden - Immutable Trail)
+router.delete('/audit-logs', authenticateToken, requireAdmin, (req, res) => {
+  return res.status(403).json({
+    error: 'Audit logs cannot be deleted. Security audit records are immutable and must be preserved for compliance and non-repudiation.'
+  });
 });
 
 export default router;

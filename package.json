@@ -11,7 +11,13 @@
     "start": "node server/index.js",
     "test-api": "node server/test-api.js"
   },
-  "keywords": ["rgmcet", "aiml", "timetable", "academic", "schedule"],
+  "keywords": [
+    "rgmcet",
+    "aiml",
+    "timetable",
+    "academic",
+    "schedule"
+  ],
   "author": "AIML Dept, RGMCET",
   "license": "ISC",
   "dependencies": {
@@ -19,6 +25,8 @@
     "cors": "^2.8.6",
     "csv-parser": "^3.2.1",
     "express": "^5.2.1",
+    "express-rate-limit": "^8.7.1",
+    "helmet": "^8.3.0",
     "jsonwebtoken": "^9.0.3",
     "multer": "^2.3.0"
   }

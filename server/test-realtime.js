@@ -1,4 +1,6 @@
 import http from 'node:http';
+import bcrypt from 'bcryptjs';
+import db from './db.js';
 
 const BASE_URL = 'http://localhost:5000';
 
@@ -40,7 +42,22 @@ async function runRealtimeTests() {
     }
   }
 
+  let localServer = null;
   try {
+    try {
+      const ping = await fetch('http://127.0.0.1:5000/api/health', { signal: AbortSignal.timeout(500) });
+      if (!ping.ok) throw new Error('Not ready');
+    } catch (e) {
+      console.log('  🚀 Starting in-process server on http://127.0.0.1:5000 for realtime tests...');
+      const indexModule = await import('./index.js');
+      localServer = indexModule.default;
+      await new Promise(r => setTimeout(r, 600));
+    }
+
+    // Clear any active sessions before test run and ensure default credentials
+    db.prepare('DELETE FROM active_sessions').run();
+    db.prepare("UPDATE users SET password_hash = ? WHERE register_id = 'FAC001'").run(bcrypt.hashSync('12345678', 10));
+
     // 1. Health check
     const health = await request('/api/health');
     assert('Health check endpoint is online', health.status === 200 && health.data.status === 'online');
@@ -66,12 +83,28 @@ async function runRealtimeTests() {
     assert('Version endpoint returns valid timestamp', initialVersion.status === 200 && initialVersion.data.version > 0);
     const startVer = initialVersion.data.version;
 
-    // 5. Connect Faculty to SSE Event Stream
-    console.log('  📡 Connecting Faculty client to SSE stream (/api/timetables/events)...');
+    // 5. Connect Faculty to SSE Event Stream using single-use ticket
+    console.log('  📡 Acquiring single-use SSE ticket for Faculty client...');
+    const ticketRes = await request('/api/timetables/events/ticket', {
+      method: 'POST',
+      token: facultyToken
+    });
+    assert('Acquired single-use SSE ticket', ticketRes.status === 200 && ticketRes.data.ticket);
+    const sseTicket = ticketRes.data.ticket;
+
+    // Verify rejection when connecting with raw token in query string
+    const rejectedReq = await new Promise((resolve) => {
+      http.get(`http://localhost:5000/api/timetables/events?token=${encodeURIComponent(facultyToken)}`, (res) => {
+        resolve(res.statusCode);
+      });
+    });
+    assert('Direct query token connection rejected (401)', rejectedReq === 401);
+
+    console.log('  📡 Connecting Faculty client to SSE stream (/api/timetables/events?ticket=)...');
     let sseConnected = false;
     let receivedSseEvent = null;
 
-    const sseReq = http.request(`http://localhost:5000/api/timetables/events?token=${encodeURIComponent(facultyToken)}`, (res) => {
+    const sseReq = http.request(`http://localhost:5000/api/timetables/events?ticket=${encodeURIComponent(sseTicket)}`, (res) => {
       res.on('data', (chunk) => {
         const text = chunk.toString();
         const lines = text.split('\n');
@@ -170,6 +203,9 @@ async function runRealtimeTests() {
   console.log(`Real-Time Verification Summary: ${passed} passed, ${failed} failed`);
   console.log(`========================================\n`);
 
+  if (localServer && typeof localServer.close === 'function') {
+    localServer.close();
+  }
   process.exit(failed > 0 ? 1 : 0);
 }
 

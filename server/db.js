@@ -4,17 +4,18 @@ import fs from 'node:fs';
 import bcrypt from 'bcryptjs';
 import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
+import config from './env.js';
 import { getSlotTimeRange, timesOverlap } from './timeUtils.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const dataDir = path.join(__dirname, 'data');
-if (!fs.existsSync(dataDir)) {
-  fs.mkdirSync(dataDir, { recursive: true });
+const dbPath = config.DB_PATH;
+const dbDir = path.dirname(dbPath);
+if (!fs.existsSync(dbDir)) {
+  fs.mkdirSync(dbDir, { recursive: true });
 }
 
-const dbPath = path.join(dataDir, 'academic.db');
 const db = new DatabaseSync(dbPath);
 
 // Enable foreign keys and concurrent access
@@ -170,6 +171,12 @@ try {
 } catch (e) {
   // column already exists
 }
+try {
+  db.exec("ALTER TABLE users ADD COLUMN must_change_password INTEGER DEFAULT 0;");
+} catch (e) {}
+try {
+  db.exec("ALTER TABLE password_resets ADD COLUMN otp_hash TEXT;");
+} catch (e) {}
 
 // Migrate faculty_overrides table to allow 'busy' and 'leave' statuses and add override_date
 try {
@@ -234,16 +241,16 @@ export const OFFICIAL_SECTIONS = [
 
 // 19 Official RGMCET Faculty Members (Department of CSE - AI & ML)
 export const OFFICIAL_FACULTY = [
-  { id: 'FAC001', name: 'Dr. G. Kishor Kumar', desig: 'Professor', qual: 'M.Tech & Ph.D', phone: '9848022301', status: 'active' },
-  { id: 'FAC002', name: 'Dr. J. Avinash', desig: 'Assistant Professor', qual: 'M.Tech & Ph.D', phone: '9848022302', status: 'active' },
-  { id: 'FAC003', name: 'Dr. G. Chandana Swathi', desig: 'Assistant Professor', qual: 'M.Tech & Ph.D', phone: '9848022303', status: 'active' },
-  { id: 'FAC004', name: 'Dr. Chakrapani', desig: 'Assistant Professor', qual: 'M.Tech & Ph.D', phone: '9848022304', status: 'active' },
-  { id: 'FAC005', name: 'Mrs. C. Leelavathi', desig: 'Assistant Professor', qual: 'M.Tech', phone: '9848022305', status: 'active' },
-  { id: 'FAC006', name: 'Mr. P. Sreekanth Reddy', desig: 'Assistant Professor', qual: 'M.Tech', phone: '9848022306', status: 'active' },
-  { id: 'FAC007', name: 'Ms. D. Saraswathi', desig: 'Assistant Professor', qual: 'M.Tech', phone: '9848022307', status: 'active' },
-  { id: 'FAC008', name: 'Mr. S. Kalim Peerulla Basha', desig: 'Assistant Professor', qual: 'M.Tech', phone: '9848022308', status: 'active' },
-  { id: 'FAC009', name: 'Ms. E. Naveena', desig: 'Assistant Professor', qual: 'M.Tech', phone: '9848022309', status: 'active' },
-  { id: 'FAC010', name: 'Mr. S. Sunil Kumar', desig: 'Assistant Professor', qual: 'M.Tech, (Ph.D)', phone: '9848022310', status: 'active' },
+  { id: 'FAC001', name: 'Dr. G. Kishor Kumar', desig: 'Professor', qual: 'M.Tech & Ph.D', phone: '9848022331', status: 'active' },
+  { id: 'FAC002', name: 'Dr. J. Avinash', desig: 'Assistant Professor', qual: 'M.Tech & Ph.D', phone: '9848022332', status: 'active' },
+  { id: 'FAC003', name: 'Dr. G. Chandana Swathi', desig: 'Assistant Professor', qual: 'M.Tech & Ph.D', phone: '9848022333', status: 'active' },
+  { id: 'FAC004', name: 'Dr. Chakrapani', desig: 'Assistant Professor', qual: 'M.Tech & Ph.D', phone: '9848022334', status: 'active' },
+  { id: 'FAC005', name: 'Mrs. C. Leelavathi', desig: 'Assistant Professor', qual: 'M.Tech', phone: '9848022335', status: 'active' },
+  { id: 'FAC006', name: 'Mr. P. Sreekanth Reddy', desig: 'Assistant Professor', qual: 'M.Tech', phone: '9848022336', status: 'active' },
+  { id: 'FAC007', name: 'Ms. D. Saraswathi', desig: 'Assistant Professor', qual: 'M.Tech', phone: '9848022337', status: 'active' },
+  { id: 'FAC008', name: 'Mr. S. Kalim Peerulla Basha', desig: 'Assistant Professor', qual: 'M.Tech', phone: '9848022338', status: 'active' },
+  { id: 'FAC009', name: 'Ms. E. Naveena', desig: 'Assistant Professor', qual: 'M.Tech', phone: '9848022339', status: 'active' },
+  { id: 'FAC010', name: 'Mr. S. Sunil Kumar', desig: 'Assistant Professor', qual: 'M.Tech, (Ph.D)', phone: '9848022340', status: 'active' },
   { id: 'FAC011', name: 'Mr. V. Phanishwara Hara Gopal', desig: 'Assistant Professor', qual: 'M.Tech', phone: '9848022311', status: 'active' },
   { id: 'FAC012', name: 'Dr. CH. Srilakshmi Prasanna', desig: 'Assistant Professor', qual: 'M.Tech & Ph.D', phone: '9848022312', status: 'active' },
   { id: 'FAC013', name: 'Mr. P. Arun Babu', desig: 'Assistant Professor', qual: 'M.Tech', phone: '9848022313', status: 'active' },
@@ -275,80 +282,49 @@ export function isHodFaculty(nameOrId) {
 }
 
 export function syncSectionsAndFaculty() {
-  console.log('🔄 Synchronizing official 13 Sections and 19 Faculty registry...');
+  const usersCount = db.prepare('SELECT COUNT(*) as count FROM users').get().count;
+  const isFresh = usersCount === 0;
 
-  // 1. Purge legacy admin accounts so that ONLY the official 3 Admin accounts exist initially
-  db.prepare("DELETE FROM users WHERE role = 'admin' AND UPPER(register_id) IN ('ADMIN001', 'ADMIN002', 'ADMIN003')").run();
+  if (isFresh) {
+    console.log('🌱 Seeding fresh database with official 3 Admins, 13 Sections, and 19 Faculty registry...');
 
-  // 2. Initialize the official 3 Admin accounts (admin01, admin02, admin03)
-  const initialAdminHash = bcrypt.hashSync('1352468', 10);
-  const OFFICIAL_ADMINS = [
-    { id: 'admin01', name: 'System Administrator', phone: '9848011220', desig: 'System Administrator' },
-    { id: 'admin02', name: 'Academic Administrator', phone: '9848011221', desig: 'Academic Administrator' },
-    { id: 'admin03', name: 'Department Administrator', phone: '9848011222', desig: 'Department Administrator' }
-  ];
+    // 1. Initialize the official 3 Admin accounts (admin01, admin02, admin03)
+    const adminPassword = config.ADMIN_INITIAL_PASSWORD || '1352468';
+    const initialAdminHash = bcrypt.hashSync(adminPassword, 10);
+    const OFFICIAL_ADMINS = [
+      { id: 'admin01', name: 'System Administrator', phone: '9848011220', desig: 'System Administrator' },
+      { id: 'admin02', name: 'Academic Administrator', phone: '9848011221', desig: 'Academic Administrator' },
+      { id: 'admin03', name: 'Department Administrator', phone: '9848011222', desig: 'Department Administrator' }
+    ];
 
-  for (const adm of OFFICIAL_ADMINS) {
-    const existingAdmin = db.prepare('SELECT id, password_hash FROM users WHERE LOWER(register_id) = LOWER(?)').get(adm.id);
-    if (!existingAdmin) {
+    for (const adm of OFFICIAL_ADMINS) {
       db.prepare(`
-        INSERT INTO users (register_id, name, password_hash, role, phone, department, designation, status)
-        VALUES (?, ?, ?, 'admin', ?, 'AIML', ?, 'active')
+        INSERT INTO users (register_id, name, password_hash, role, phone, department, designation, status, must_change_password)
+        VALUES (?, ?, ?, 'admin', ?, 'AIML', ?, 'active', 1)
       `).run(adm.id, adm.name, initialAdminHash, adm.phone, adm.desig);
-    } else {
-      // Update metadata without overwriting password if it was changed via OTP
+    }
+
+    // 2. Insert the 19 official faculty members with must_change_password = 1
+    const facHash = bcrypt.hashSync('12345678', 10);
+    for (const f of OFFICIAL_FACULTY) {
       db.prepare(`
-        UPDATE users
-        SET name = ?, phone = ?, designation = ?, role = 'admin', status = 'active'
-        WHERE id = ?
-      `).run(adm.name, adm.phone, adm.desig, existingAdmin.id);
+        INSERT INTO users (register_id, name, password_hash, role, phone, department, designation, qualification, status, must_change_password)
+        VALUES (?, ?, ?, 'faculty', ?, 'AIML', ?, ?, ?, 1)
+      `).run(f.id, f.name, facHash, f.phone, f.desig, f.qual, f.status);
     }
   }
 
-  // Purge legacy unwanted faculty members and removed pending slots (safeguarding all admins)
-  db.prepare(`
-    DELETE FROM users 
-    WHERE role != 'admin'
-      AND (LOWER(name) LIKE '%shoba%' 
-       OR LOWER(name) LIKE '%prof. administrator%' 
-       OR register_id IN ('FAC020', 'FAC021') 
-       OR status = 'pending');
-  `).run();
-  db.prepare(`
-    DELETE FROM timetables 
-    WHERE LOWER(faculty_name) LIKE '%shoba%' 
-       OR LOWER(faculty_name) LIKE '%prof. administrator%'
-       OR LOWER(faculty_name) LIKE '%faculty slot%';
-  `).run();
-  db.prepare(`
-    DELETE FROM faculty_overrides 
-    WHERE faculty_id NOT IN (SELECT id FROM users);
-  `).run();
-
-  // 1. Clean and insert the 16 official sections
-  const currentSections = db.prepare('SELECT id, year, name FROM sections').all();
-  for (const cs of currentSections) {
-    const isOfficial = OFFICIAL_SECTIONS.some(os => os.year === cs.year && os.name.toLowerCase() === cs.name.toLowerCase());
-    if (!isOfficial) {
-      db.prepare('DELETE FROM timetables WHERE section_id = ?').run(cs.id);
-      db.prepare('DELETE FROM sections WHERE id = ?').run(cs.id);
-    }
-  }
-
+  // Ensure the 13 official sections exist (without deleting any custom sections!)
   const insertSectionStmt = db.prepare(`
     INSERT INTO sections (year, name, sem, academic_year, batch, effective_date) 
     VALUES (?, ?, ?, ?, ?, ?)
-    ON CONFLICT(year, name) DO UPDATE SET
-      sem = excluded.sem,
-      academic_year = excluded.academic_year,
-      batch = excluded.batch,
-      effective_date = excluded.effective_date
+    ON CONFLICT(year, name) DO NOTHING
   `);
   for (const s of OFFICIAL_SECTIONS) {
     insertSectionStmt.run(s.year, s.name, s.sem || 1, s.academic_year || '2026-2027', s.batch || '2024-2028', s.effective_date || '15-07-2026');
   }
 
-  // 1b. Seed 10 Theory Rooms and 2 Labs
+  // Seed 10 Theory Rooms and 2 Labs if not present
   const insertRoomStmt = db.prepare('INSERT OR IGNORE INTO rooms (name, type, capacity) VALUES (?, ?, ?)');
   for (let r = 1; r <= 10; r++) {
     insertRoomStmt.run(`AIML-LH${r}`, 'theory', 60);
@@ -356,47 +332,15 @@ export function syncSectionsAndFaculty() {
   insertRoomStmt.run('AIML-LAB1', 'lab', 60);
   insertRoomStmt.run('AIML-LAB2', 'lab', 60);
 
-  // 2. Upsert the 19 official faculty members with default password: 12345678
-  const facHash = bcrypt.hashSync('12345678', 10);
-  for (const f of OFFICIAL_FACULTY) {
-    const existingFaculty = db.prepare("SELECT id, register_id, name FROM users WHERE role = 'faculty' AND (register_id = ? OR name = ?)").get(f.id, f.name);
-    if (existingFaculty) {
-      db.prepare(`
-        UPDATE users
-        SET designation = COALESCE(designation, ?),
-            qualification = COALESCE(qualification, ?),
-            status = COALESCE(status, ?),
-            phone = CASE WHEN users.phone IS NULL OR users.phone = '' THEN ? ELSE users.phone END
-        WHERE id = ?
-      `).run(f.desig, f.qual, f.status, f.phone, existingFaculty.id);
-    } else {
-      db.prepare(`
-        INSERT INTO users (register_id, name, password_hash, role, phone, department, designation, qualification, status)
-        VALUES (?, ?, ?, 'faculty', ?, 'AIML', ?, ?, ?)
-      `).run(f.id, f.name, facHash, f.phone, f.desig, f.qual, f.status);
-    }
-  }
-
-  // Set default password to 12345678 for all existing faculty accounts on legacy default 'faculty123'
-  const allFaculty = db.prepare("SELECT id, password_hash FROM users WHERE role = 'faculty'").all();
-  for (const fac of allFaculty) {
-    if (bcrypt.compareSync('faculty123', fac.password_hash)) {
-      db.prepare("UPDATE users SET password_hash = ? WHERE id = ?").run(facHash, fac.id);
-    }
-  }
-
-  // 2b. Upsert faculty workload and subject/lab competencies (max 16 hrs/week cap; HOD 0 hrs)
+  // Upsert faculty workload configs if not present
   const insertWorkloadStmt = db.prepare(`
     INSERT INTO faculty_workload_config (faculty_id, assigned_subjects, assigned_labs, max_weekly_hours)
     VALUES (?, ?, ?, ?)
-    ON CONFLICT(faculty_id) DO UPDATE SET
-      assigned_subjects = excluded.assigned_subjects,
-      assigned_labs = excluded.assigned_labs,
-      max_weekly_hours = excluded.max_weekly_hours
+    ON CONFLICT(faculty_id) DO NOTHING
   `);
 
   const facultyWorkloadMap = {
-    'FAC001': { subjects: [], labs: [], max_weekly_hours: 0 }, // HOD: Strictly 0 teaching subjects/labs
+    'FAC001': { subjects: [], labs: [], max_weekly_hours: 0 },
     'FAC002': { subjects: ['ADSA', 'AI', 'EDA', 'CV&IP', 'IP', 'Deep Learning', 'DEEP LEARNING', 'MLOPS', 'BIG DATA'], labs: ['ADSA LAB', 'TINKERING LAB', 'CV&ML LAB', 'DL LAB'] },
     'FAC003': { subjects: ['NLP', 'CV&IP', 'SSP', 'MLOPS', 'Deep Learning', 'DEEP LEARNING'], labs: ['CV&ML LAB', 'TINKERING LAB', 'DL LAB'] },
     'FAC004': { subjects: ['CV&IP', 'IP', 'PROJECT WORK', 'Deep Learning', 'DEEP LEARNING', 'BIG DATA'], labs: ['CV&ML LAB', 'TINKERING LAB', 'DL LAB'] },
@@ -420,48 +364,34 @@ export function syncSectionsAndFaculty() {
   for (const f of OFFICIAL_FACULTY) {
     const userRec = db.prepare("SELECT id FROM users WHERE role = 'faculty' AND (register_id = ? OR name = ?)").get(f.id, f.name);
     if (userRec) {
-      const config = facultyWorkloadMap[f.id] || { subjects: ['AI'], labs: ['AI&SP LAB'], max_weekly_hours: 16 };
-      insertWorkloadStmt.run(userRec.id, JSON.stringify(config.subjects), JSON.stringify(config.labs), config.max_weekly_hours !== undefined ? config.max_weekly_hours : 16);
+      const workload = facultyWorkloadMap[f.id] || { subjects: ['AI'], labs: ['AI&SP LAB'], max_weekly_hours: 16 };
+      insertWorkloadStmt.run(userRec.id, JSON.stringify(workload.subjects), JSON.stringify(workload.labs), workload.max_weekly_hours !== undefined ? workload.max_weekly_hours : 16);
     }
   }
 
-  // 3. Populate timetables across all 13 sections
-  populateTimetablesData();
-  db.prepare("UPDATE timetables SET faculty_name = '—' WHERE UPPER(TRIM(subject)) = 'SEM'").run();
-  db.prepare(`
-    UPDATE timetables 
-    SET faculty_name = '—' 
-    WHERE year = 1 
-      AND UPPER(TRIM(subject)) != 'IP' 
-      AND UPPER(TRIM(subject)) NOT LIKE 'IP %' 
-      AND UPPER(TRIM(subject)) NOT LIKE '%CP LAB%'
-  `).run();
-  db.prepare(`
-    UPDATE timetables 
-    SET faculty_name = '—' 
-    WHERE year = 2 
-      AND UPPER(TRIM(subject)) NOT IN ('AI', 'ADSA', 'UHV', 'PYP', 'ADSA LAB', 'OOPJ', 'OOPJ LAB', 'PYP LAB')
-  `).run();
-  db.prepare(`
-    UPDATE timetables 
-    SET faculty_name = '—' 
-    WHERE LOWER(faculty_name) LIKE '%kishor kumar%' 
-       OR (LOWER(faculty_name) LIKE '%kishor%' AND LOWER(faculty_name) NOT LIKE '%bala kishore%')
-  `).run();
-  db.prepare("UPDATE users SET designation = 'Professor' WHERE register_id = 'FAC001'").run();
+  // Only populate initial timetables if the timetables table is completely empty
+  const ttCount = db.prepare('SELECT COUNT(*) as count FROM timetables').get().count;
+  if (ttCount === 0) {
+    populateTimetablesData();
+  }
 }
 
 // Seed default data
 export function seedDatabase() {
   try { db.exec("ALTER TABLE users ADD COLUMN status TEXT DEFAULT 'active';"); } catch (e) {}
   try { db.exec("ALTER TABLE users ADD COLUMN qualification TEXT;"); } catch (e) {}
+  try { db.exec("ALTER TABLE users ADD COLUMN must_change_password INTEGER DEFAULT 0;"); } catch (e) {}
+  try { db.exec("ALTER TABLE password_resets ADD COLUMN otp_hash TEXT;"); } catch (e) {}
 
-  const studentCheck = db.prepare('SELECT COUNT(*) as count FROM users WHERE role = ?').get('student');
-  
-  if (studentCheck.count === 0) {
-    console.log('🌱 Seeding database with initial academic records...');
+  const totalUsers = db.prepare('SELECT COUNT(*) as count FROM users').get().count;
 
-    // Sample Students (Password: student123)
+  // Synchronize base registry and rooms (non-destructive)
+  syncSectionsAndFaculty();
+
+  if (totalUsers === 0) {
+    console.log('🌱 Seeding initial sample student accounts with must_change_password flag...');
+
+    // Sample Students (Password: student123, forced change on first login)
     const stuHash = bcrypt.hashSync('student123', 10);
     const studentList = [
       { id: '24091A3301', name: 'Rahul Varma', phone: '9123456701', year: 1 },
@@ -475,55 +405,29 @@ export function seedDatabase() {
     ];
 
     const insertUserStmt = db.prepare(`
-      INSERT INTO users (register_id, name, password_hash, role, phone, department, designation, year)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO users (register_id, name, password_hash, role, phone, department, designation, year, status, must_change_password)
+      VALUES (?, ?, ?, 'student', ?, 'AIML', 'Student', ?, 'active', 1)
     `);
 
     for (const s of studentList) {
-      insertUserStmt.run(s.id, s.name, stuHash, 'student', s.phone, 'AIML', 'Student', s.year);
+      insertUserStmt.run(s.id, s.name, stuHash, s.phone, s.year);
     }
   }
 
-  // Ensure default demo student exists
+  // Ensure default demo student exists for legacy tests
   const demoStudent = db.prepare('SELECT id FROM users WHERE register_id = ?').get('22091A3324');
   if (!demoStudent) {
     const stuHash = bcrypt.hashSync('student123', 10);
     db.prepare(`
-      INSERT INTO users (register_id, name, password_hash, role, phone, department, designation, year)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).run('22091A3324', 'Karthik Kumar', stuHash, 'student', '9123456705', 'AIML', 'Student', 3);
+      INSERT INTO users (register_id, name, password_hash, role, phone, department, designation, year, status, must_change_password)
+      VALUES (?, ?, ?, 'student', ?, 'AIML', 'Student', ?, 'active', 1)
+    `).run('22091A3324', 'Karthik Kumar', stuHash, '9123456705', 3);
   }
-
-  // Always synchronize 13 sections & 19 faculty members
-  syncSectionsAndFaculty();
-
-  // Seed sample faculty overrides for demonstration
-  const fac1 = db.prepare('SELECT id FROM users WHERE register_id = ?').get('FAC001');
-  const fac2 = db.prepare('SELECT id FROM users WHERE register_id = ?').get('FAC002');
-  if (fac1) {
-    db.prepare(`
-      INSERT OR IGNORE INTO faculty_overrides (faculty_id, day, period, status, note)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(fac1.id, 'Tuesday', 5, 'busy', 'Unavailable');
-  }
-  if (fac2) {
-    db.prepare(`
-      INSERT OR IGNORE INTO faculty_overrides (faculty_id, day, period, status, note)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(fac2.id, 'Wednesday', 5, 'busy', 'Unavailable');
-  }
-
-  // Ensure any legacy overrides are cleaned to busy
-  db.prepare(`
-    UPDATE faculty_overrides 
-    SET status = 'busy', note = '' 
-    WHERE status IN ('office_hours', 'meeting', 'mentoring', 'unavailable')
-  `).run();
 
   // Ensure all timetable slots across all sections have valid room assignments
   ensureAllRoomsAssigned();
 
-  console.log('✅ Database successfully initialized with 13 Sections and 19 Faculty registry!');
+  console.log('✅ Database verified and ready.');
 }
 
 export function ensureAllRoomsAssigned() {

@@ -27,16 +27,27 @@ Designed with a clean, professional academic aesthetic: white background, RGMCET
 
 ### 4. Dynamic Weekly Timetables (Monday – Saturday, 7 Periods)
 - **Comprehensive Access**: Every logged-in user (students, faculty, admin) can view weekly timetables for all 4 years (1st, 2nd, 3rd, and 4th Year AIML) and switch between sections.
-- **Academic Timing**:
+- **Academic Timing (Senior Years: 2nd, 3rd, 4th Year)**:
   - Period 1: 09:00 AM – 09:50 AM
   - Period 2: 09:50 AM – 10:40 AM
-  - *Short Break: 10:40 AM – 10:50 AM*
-  - Period 3: 10:50 AM – 11:40 AM
-  - Period 4: 11:40 AM – 12:30 PM
-  - *Lunch Break: 12:30 PM – 01:20 PM*
-  - Period 5: 01:20 PM – 02:10 PM
-  - Period 6: 02:10 PM – 03:00 PM
-  - Period 7: 03:00 PM – 03:50 PM
+  - *Short Break: 10:40 AM – 11:00 AM*
+  - Period 3: 11:00 AM – 11:50 AM
+  - Period 4: 11:50 AM – 12:40 PM
+  - *Lunch Break: 12:40 PM – 01:50 PM*
+  - Period 5: 01:50 PM – 02:40 PM
+  - Period 6: 02:40 PM – 03:30 PM
+  - Period 7: 03:30 PM – 04:20 PM (Faculty availability extends to 05:00 PM)
+- **Academic Timing (1st Year)**:
+  - Period 1: 09:00 AM – 09:50 AM
+  - Period 2: 09:50 AM – 10:40 AM
+  - *Morning Break: 10:40 AM – 11:00 AM*
+  - Period 3: 11:00 AM – 11:50 AM
+  - *Lunch Break: 11:50 AM – 01:00 PM*
+  - Period 4: 01:00 PM – 01:50 PM
+  - Period 5: 01:50 PM – 02:40 PM
+  - *Afternoon Break: 02:40 PM – 03:00 PM*
+  - Period 6: 03:00 PM – 03:50 PM
+  - Period 7: 04:00 PM – 04:50 PM
 - **Admin Timetable Tools**:
   - Add and delete sections per year (e.g. Section A, Section B, Section C).
   - Interactive grid editor: click any cell to edit Subject, Faculty, and Room.

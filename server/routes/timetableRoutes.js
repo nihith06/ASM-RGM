@@ -334,6 +334,25 @@ router.post('/cell', authenticateToken, requireAdmin, (req, res) => {
       }
     }
 
+    // Perform room double-booking check for each period
+    if (room && room.trim() && room.trim() !== '—' && cleanSubject && cleanSubject !== '—') {
+      for (const p of periodList) {
+        const roomConflict = checkRoomConflict(db, room, day, yr, p, {
+          year: yr,
+          section_id: secId,
+          day,
+          period: p
+        });
+
+        if (roomConflict.conflict) {
+          return res.status(409).json({
+            error: roomConflict.message,
+            conflict: roomConflict
+          });
+        }
+      }
+    }
+
     // Upsert into timetables table
     const stmt = db.prepare(`
       INSERT INTO timetables (year, section_id, day, period, subject, faculty_name, room)
@@ -403,6 +422,22 @@ router.post('/bulk-grid', authenticateToken, requireAdmin, (req, res) => {
           return res.status(409).json({
             error: `Bulk upload stopped: ${conflict.message}`,
             conflict
+          });
+        }
+      }
+
+      if (c.room && c.room.trim() && c.room.trim() !== '—' && VALID_DAYS.includes(c.day) && p >= 1 && p <= 7 && sub && sub !== '—') {
+        const roomConflict = checkRoomConflict(db, c.room, c.day, yr, p, {
+          year: yr,
+          section_id: secId,
+          day: c.day,
+          period: p
+        });
+
+        if (roomConflict.conflict) {
+          return res.status(409).json({
+            error: `Bulk upload stopped: ${roomConflict.message}`,
+            conflict: roomConflict
           });
         }
       }
@@ -516,6 +551,22 @@ router.post('/import-csv', authenticateToken, requireAdmin, (req, res) => {
           });
         }
       }
+
+      if (c.room && c.room.trim() && c.room.trim() !== '—' && c.subject && c.subject !== '—') {
+        const roomConflict = checkRoomConflict(db, c.room, c.day, yr, c.period, {
+          year: yr,
+          section_id: secId,
+          day: c.day,
+          period: c.period
+        });
+
+        if (roomConflict.conflict) {
+          return res.status(409).json({
+            error: `CSV Import conflict: ${roomConflict.message}`,
+            conflict: roomConflict
+          });
+        }
+      }
     }
 
     const stmt = db.prepare(`
@@ -548,11 +599,13 @@ router.post('/import-csv', authenticateToken, requireAdmin, (req, res) => {
 // POST generate timetable using constraint satisfaction solver (Admin only)
 router.post('/generate', authenticateToken, requireAdmin, (req, res) => {
   try {
-    const { section_id, all_sections, year } = req.body;
+    const { section_id, all_sections, year, dry_run, dryRun } = req.body;
+    const isDryRun = Boolean(dry_run || dryRun);
     const result = generateSchedule({
       sectionId: section_id ? parseInt(section_id, 10) : null,
       allSections: Boolean(all_sections),
-      year: year ? parseInt(year, 10) : null
+      year: year ? parseInt(year, 10) : null,
+      dryRun: isDryRun
     });
 
     if (!result.success) {
@@ -709,6 +762,52 @@ router.post('/validate-upload', authenticateToken, requireAdmin, (req, res) => {
             error: `Cannot create timetable. ${fac} is already teaching on ${day} during Hour ${item.period} in ${conflictYearSuffix} Year - ${conflictSecName}.`
           });
         }
+      }
+    }
+
+    // Intra-upload room double-booking check
+    const intraRoomMap = new Map();
+    for (const c of cells) {
+      const day = normalizeDayName(c.day);
+      const period = parseInt(c.period, 10);
+      const room = (c.room || '').trim();
+
+      if (!room || room === '—' || room === '-' || room.toLowerCase() === 'nil') {
+        continue;
+      }
+
+      const key = `${day}_${period}_${room.toUpperCase()}`;
+      if (intraRoomMap.has(key)) {
+        return res.status(409).json({
+          valid: false,
+          error: `Room Conflict: Room "${room}" is assigned multiple times on ${day} during Hour ${period} in the upload file.`
+        });
+      }
+      intraRoomMap.set(key, true);
+    }
+
+    // Database room conflict: check if room is already booked on the same day and overlapping time in another year/section
+    for (const c of cells) {
+      const day = normalizeDayName(c.day);
+      const period = parseInt(c.period, 10);
+      const room = (c.room || '').trim();
+
+      if (!room || room === '—' || room === '-' || room.toLowerCase() === 'nil') {
+        continue;
+      }
+
+      const roomConflict = checkRoomConflict(db, room, day, yr, period, {
+        year: yr,
+        section_id: secId,
+        day,
+        period
+      });
+
+      if (roomConflict.conflict) {
+        return res.status(409).json({
+          valid: false,
+          error: roomConflict.message
+        });
       }
     }
 

@@ -22,8 +22,10 @@ import {
   FileText,
   Lock,
   Eye,
-  EyeOff
+  EyeOff,
+  Sparkles
 } from 'lucide-react';
+import ScheduleGeneratorModal from '../components/ScheduleGeneratorModal';
 import { directoryApi, authApi } from '../api';
 import TimetableGrid from '../components/TimetableGrid';
 import FacultyAvailabilityView from '../components/FacultyAvailabilityView';
@@ -44,6 +46,7 @@ export default function AdminDashboard({ user }) {
   const [editError, setEditError] = useState('');
   const [editLoading, setEditLoading] = useState(false);
   const [isAddUserModal, setIsAddUserModal] = useState(false);
+  const [isGeneratorModal, setIsGeneratorModal] = useState(false);
   const [newUserRole, setNewUserRole] = useState('student');
   const [newUserData, setNewUserData] = useState({
     name: '',
@@ -269,13 +272,22 @@ export default function AdminDashboard({ user }) {
         </div>
 
         {/* Action Button: Create New User */}
-        <button
+        <div className="flex flex-wrap items-center gap-2.5">
+          <button
+            onClick={() => setIsGeneratorModal(true)}
+            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-amber-400 hover:bg-amber-300 text-navy-950 text-xs font-black transition-all active:scale-95 shadow-sm cursor-pointer"
+          >
+            <Sparkles className="w-4 h-4" />
+            <span>AI Schedule Generator</span>
+          </button>
+          <button
           onClick={() => setIsAddUserModal(true)}
           className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white/10 hover:bg-white/20 text-white text-xs font-bold border border-white/20 transition-all active:scale-95 cursor-pointer"
         >
           <Plus className="w-4 h-4 text-amber-300" />
           <span>Register Account / Admin</span>
         </button>
+        </div>
       </div>
 
       {/* Stats Summary Cards */}
@@ -1081,6 +1093,16 @@ export default function AdminDashboard({ user }) {
           </div>
         </div>
       )}
+
+      {/* AI Schedule Generator Modal with Dry-Run */}
+      <ScheduleGeneratorModal
+        isOpen={isGeneratorModal}
+        onClose={() => setIsGeneratorModal(false)}
+        onGenerated={() => {
+          setSuccess('Schedule generation complete! Timetable grid updated.');
+          loadStats();
+        }}
+      />
 
         </div>
       </div>

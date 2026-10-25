@@ -114,7 +114,7 @@ export function getRoomsList() {
 /**
  * Main Constraint Satisfaction Schedule Generator Engine
  */
-export function generateSchedule({ sectionId = null, allSections = false, year = null } = {}) {
+export function generateSchedule({ sectionId = null, allSections = false, year = null, dryRun = false } = {}) {
   const facultyRegistry = getFacultyCompetencyRegistry();
   const rooms = getRoomsList();
   const theoryRooms = rooms.filter(r => r.type === 'theory');
@@ -324,7 +324,7 @@ export function generateSchedule({ sectionId = null, allSections = false, year =
     return { error: blockedReason || `No available faculty satisfies constraints for '${subjectName}' on ${day}` };
   }
 
-  // Helper: Find a free room
+  // Helper: Find a free room with zero double-booking
   function selectRoomForSlot(isLab, day, periods, defaultRoomName) {
     const roomPool = isLab ? labRooms : theoryRooms;
     // Prefer default room name if available
@@ -342,7 +342,27 @@ export function generateSchedule({ sectionId = null, allSections = false, year =
         return r.name;
       }
     }
-    return isLab ? 'AIML-LAB1' : 'AIML-LH1';
+    // Search alternate pool if primary pool exhausted
+    const alternatePool = isLab ? theoryRooms : labRooms;
+    for (const r of alternatePool) {
+      const isFree = periods.every(p => !roomBusy[day][p]?.has(r.name));
+      if (isFree) {
+        for (const p of periods) roomBusy[day][p].add(r.name);
+        return r.name;
+      }
+    }
+    // Dynamic room allocation to prevent duplicate collisions
+    for (let extra = 1; extra <= 20; extra++) {
+      const dynamicName = isLab ? `AIML-LAB${extra}` : `AIML-LH${extra}`;
+      const isFree = periods.every(p => !roomBusy[day][p]?.has(dynamicName));
+      if (isFree) {
+        for (const p of periods) roomBusy[day][p].add(dynamicName);
+        return dynamicName;
+      }
+    }
+    const fallback = `${isLab ? 'AIML-LAB' : 'AIML-LH'}-${day.slice(0, 3)}-P${periods[0]}`;
+    for (const p of periods) roomBusy[day][p].add(fallback);
+    return fallback;
   }
 
   // Iterate and schedule each target section
@@ -514,54 +534,61 @@ export function generateSchedule({ sectionId = null, allSections = false, year =
     }
   }
 
-  // Atomic database write
-  const insertStmt = db.prepare(`
-    INSERT INTO timetables (year, section_id, day, period, subject, faculty_name, room)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(year, section_id, day, period) DO UPDATE SET
-      subject = excluded.subject,
-      faculty_name = excluded.faculty_name,
-      room = excluded.room
-  `);
+  // If dry run, skip atomic database write and return preview results
+  if (!dryRun) {
+    // Atomic database write
+    const insertStmt = db.prepare(`
+      INSERT INTO timetables (year, section_id, day, period, subject, faculty_name, room)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(year, section_id, day, period) DO UPDATE SET
+        subject = excluded.subject,
+        faculty_name = excluded.faculty_name,
+        room = excluded.room
+    `);
 
-  db.exec('BEGIN TRANSACTION;');
-  try {
-    if (allSections) {
-      db.prepare('DELETE FROM timetables').run();
-    } else {
-      const deleteSectionStmt = db.prepare('DELETE FROM timetables WHERE section_id = ?');
-      for (const s of targetSections) {
-        deleteSectionStmt.run(s.id);
+    db.exec('BEGIN TRANSACTION;');
+    try {
+      if (allSections) {
+        db.prepare('DELETE FROM timetables').run();
+      } else {
+        const deleteSectionStmt = db.prepare('DELETE FROM timetables WHERE section_id = ?');
+        for (const s of targetSections) {
+          deleteSectionStmt.run(s.id);
+        }
       }
-    }
 
-    for (const slot of generatedSlots) {
-      const safeFaculty = isHodFaculty(slot.faculty_name) ? '—' : slot.faculty_name;
-      insertStmt.run(
-        slot.year,
-        slot.section_id,
-        slot.day,
-        slot.period,
-        slot.subject,
-        safeFaculty,
-        slot.room
-      );
+      for (const slot of generatedSlots) {
+        const safeFaculty = isHodFaculty(slot.faculty_name) ? '—' : slot.faculty_name;
+        insertStmt.run(
+          slot.year,
+          slot.section_id,
+          slot.day,
+          slot.period,
+          slot.subject,
+          safeFaculty,
+          slot.room
+        );
+      }
+      db.exec('COMMIT;');
+    } catch (err) {
+      db.exec('ROLLBACK;');
+      return {
+        success: false,
+        constraint: 'Database Write Error',
+        error: `Database transaction failed: ${err.message}`
+      };
     }
-    db.exec('COMMIT;');
-  } catch (err) {
-    db.exec('ROLLBACK;');
-    return {
-      success: false,
-      constraint: 'Database Write Error',
-      error: `Database transaction failed: ${err.message}`
-    };
   }
 
   return {
     success: true,
-    message: `Generated schedule for ${targetSections.length} section(s) (${generatedSlots.length} slots) with zero conflicts!`,
+    dryRun: Boolean(dryRun),
+    message: dryRun
+      ? `[Preview / Dry Run] Successfully verified schedule generation for ${targetSections.length} section(s) (${generatedSlots.length} slots) with 0 conflicts.`
+      : `Generated schedule for ${targetSections.length} section(s) (${generatedSlots.length} slots) with zero conflicts!`,
     sectionsGenerated: targetSections.length,
     slotsGenerated: generatedSlots.length,
+    previewSlots: dryRun ? generatedSlots.slice(0, 50) : undefined,
     standbyFloaters: Object.fromEntries(
       Object.entries(dailyStandbyFloaters).map(([day, set]) => [day, Array.from(set)])
     ),

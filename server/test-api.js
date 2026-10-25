@@ -1202,12 +1202,67 @@ async function runTests() {
     });
     assert('Student attempting automated timetable generation rejected with 403 Forbidden', studentGen.status === 403);
 
+    const adminDryRunGen = await request('/api/timetables/generate', {
+      method: 'POST',
+      token: adminToken,
+      body: { all_sections: true, dry_run: true }
+    });
+    assert('Admin timetable generator dry-run preview succeeds (200)', adminDryRunGen.status === 200 && adminDryRunGen.data.dryRun === true);
+
     const adminGen = await request('/api/timetables/generate', {
       method: 'POST',
       token: adminToken,
       body: { section_id: testSec.id, year: testSec.year }
     });
     assert('Admin automated timetable generation succeeds with 200 OK', adminGen.status === 200 && adminGen.data.success === true);
+
+    // Phase 3: Room Double-Booking Collision Verification
+    // Step 21b: Find existing slot with room in Section A
+    const secASlot = db.prepare(`
+      SELECT year, section_id, day, period, room, subject, faculty_name 
+      FROM timetables 
+      WHERE room IS NOT NULL AND room != '' AND room != '—' AND subject != '—' 
+      LIMIT 1
+    `).get();
+
+    if (secASlot) {
+      // Find a different section in the same year or another year
+      const diffSection = db.prepare(`
+        SELECT id, year, name FROM sections WHERE id != ? AND year = ? LIMIT 1
+      `).get(secASlot.section_id, secASlot.year);
+
+      if (diffSection) {
+        // Attempting to assign the SAME room at the SAME time in another section must be rejected (409)
+        const roomDoubleBookingAttempt = await request('/api/timetables/cell', {
+          method: 'POST',
+          token: adminToken,
+          body: {
+            year: diffSection.year,
+            section_id: diffSection.id,
+            day: secASlot.day,
+            period: secASlot.period,
+            subject: 'Double Booking Test',
+            faculty_name: 'Mrs. P. Priyanka',
+            room: secASlot.room
+          }
+        });
+        assert('Assigning overlapping room double-booking in /cell rejected with 409 Conflict', roomDoubleBookingAttempt.status === 409);
+
+        // Verify room conflict is also caught in /validate-upload
+        const uploadRoomConflict = await request('/api/timetables/validate-upload', {
+          method: 'POST',
+          token: adminToken,
+          body: {
+            year: diffSection.year,
+            section_id: diffSection.id,
+            cells: [
+              { day: secASlot.day, period: secASlot.period, subject: 'Double Booking Test', faculty_name: 'Mrs. P. Priyanka', room: secASlot.room }
+            ]
+          }
+        });
+        assert('Upload validation rejects already-booked room with 409 Conflict', uploadRoomConflict.status === 409);
+      }
+    }
 
     // 22. PDF Faculty Details RBAC Phone Privacy Verification
     const studentTtView = await request(`/api/timetables?year=${testSec.year}&section_id=${testSec.id}`, { token: studentToken });

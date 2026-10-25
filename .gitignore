@@ -19,6 +19,7 @@ npm-debug.log*
 # SQLite Temporary and Test Databases
 server/data/temp-test*
 server/data/backup-pre-hardening.db
+server/data/backup-pre-student-removal.db
 *.db-journal
 *.db-shm
 *.db-wal

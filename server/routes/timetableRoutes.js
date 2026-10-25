@@ -1,18 +1,40 @@
 import express from 'express';
+import rateLimit from 'express-rate-limit';
 import db, { isYear1AimlSubject, isYear2AimlSubject, isHodFaculty } from '../db.js';
-import { authenticateToken, requireAdmin } from '../auth.js';
+import { authenticateToken, requireAdmin, optionalAuthenticateToken } from '../auth.js';
 import { checkFacultyConflict, checkRoomConflict, getSlotTimeRange, timesOverlap, getKolkataDate } from '../timeUtils.js';
 import { generateSchedule } from '../services/scheduleGenerator.js';
 import { 
   registerClient, 
   broadcastTimetableUpdate, 
   getTimetableVersion,
-  shouldCreateTimetableNotification,
   createSseTicket,
   consumeSseTicket
 } from '../services/realtimeService.js';
 
 const router = express.Router();
+
+const isTestEnv = process.env.NODE_ENV === 'test';
+
+// Rate Limiter for public GET endpoints (60 requests per minute per IP)
+const publicGetLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 60,
+  skip: (req) => isTestEnv && !req.headers['x-test-rate-limit'],
+  message: { error: 'Too many requests. Please wait a minute.' },
+  standardHeaders: true,
+  legacyHeaders: false
+});
+
+// Rate Limiter for SSE connections (10 connections per minute per IP)
+const sseLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 10,
+  skip: (req) => isTestEnv && !req.headers['x-test-rate-limit'],
+  message: { error: 'Too many SSE connection attempts. Please wait a minute.' },
+  standardHeaders: true,
+  legacyHeaders: false
+});
 
 const VALID_DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
@@ -45,36 +67,31 @@ function notifyTimetableUpdate(year, sectionId, customMessage = null) {
   }
 }
 
-// POST generate short-lived, single-use ticket for SSE connection
-router.post('/events/ticket', authenticateToken, (req, res) => {
+// POST generate short-lived, single-use ticket for SSE connection (optional)
+router.post('/events/ticket', optionalAuthenticateToken, (req, res) => {
   const ticket = createSseTicket(req.user);
   res.json({ ticket, expires_in: 30 });
 });
 
-// GET real-time Server-Sent Events stream
-// SECURITY FIX: Replaced permanent JWT in query string with short-lived, single-use ticket
-router.get('/events', (req, res) => {
+// GET real-time Server-Sent Events stream (Public with rate limit & connection pool limit)
+router.get('/events', sseLimiter, (req, res) => {
   const ticket = req.query?.ticket;
-  if (!ticket) {
-    return res.status(401).json({ error: 'SSE ticket required. Obtain ticket via POST /api/timetables/events/ticket' });
+  if (ticket) {
+    const user = consumeSseTicket(ticket);
+    if (user) {
+      req.user = user;
+    }
   }
-
-  const user = consumeSseTicket(ticket);
-  if (!user) {
-    return res.status(401).json({ error: 'SSE ticket is invalid or has expired.' });
-  }
-
-  req.user = user;
   registerClient(req, res);
 });
 
-// GET current timetable version for polling fallback
-router.get('/version', authenticateToken, (req, res) => {
+// GET current timetable version for polling fallback (Public)
+router.get('/version', publicGetLimiter, (req, res) => {
   res.json(getTimetableVersion());
 });
 
-// GET all sections (optionally filtered by year)
-router.get('/sections', authenticateToken, (req, res) => {
+// GET all sections (Public - optionally filtered by year)
+router.get('/sections', publicGetLimiter, (req, res) => {
   try {
     const { year } = req.query;
     let query = 'SELECT * FROM sections';
@@ -159,9 +176,9 @@ router.delete('/sections/:id', authenticateToken, requireAdmin, (req, res) => {
   }
 });
 
-// GET timetable: accessible to all logged-in users (Students, Faculty, Admin)
+// GET timetable: Public read-only access for visitors, students, faculty, and administrators
 // Can view any year (1, 2, 3, 4) and section
-router.get('/', authenticateToken, (req, res) => {
+router.get('/', publicGetLimiter, (req, res) => {
   try {
     const year = parseInt(req.query.year || 1, 10);
     let sectionId = req.query.section_id ? parseInt(req.query.section_id, 10) : null;
@@ -259,19 +276,19 @@ router.get('/', authenticateToken, (req, res) => {
     }
 
     // Extract unique faculty teaching in this section for the PDF footer
+    // Whitelisted public fields: subject, faculty_name, room
+    // SECURITY RULE: Phone numbers and user IDs are NEVER returned in public responses.
     const facultyListInSec = db.prepare(`
-      SELECT DISTINCT t.subject, t.faculty_name, u.phone
+      SELECT DISTINCT t.subject, t.faculty_name, t.room
       FROM timetables t
-      LEFT JOIN users u ON LOWER(TRIM(u.name)) = LOWER(TRIM(t.faculty_name)) AND u.role = 'faculty'
       WHERE t.year = ? AND t.section_id = ? AND t.subject != '—' AND t.faculty_name != '—'
       ORDER BY t.subject ASC
     `).all(year, sectionId);
 
-    const isStudent = req.user && req.user.role === 'student';
     const faculty_details = facultyListInSec.map(item => ({
       subject: item.subject,
       faculty_name: item.faculty_name,
-      phone: isStudent ? 'Protected' : (item.phone || '—')
+      room: item.room || ''
     }));
 
     res.json({

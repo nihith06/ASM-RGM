@@ -1,16 +1,30 @@
 import express from 'express';
+import rateLimit from 'express-rate-limit';
 import db from '../db.js';
-import { authenticateToken } from '../auth.js';
+import { authenticateToken, optionalAuthenticateToken } from '../auth.js';
 import { getSlotTimeRange, SENIOR_YEAR_SLOTS, PERIOD_LABELS, formatDateHuman, getKolkataDate } from '../timeUtils.js';
 import { broadcastTimetableUpdate } from '../services/realtimeService.js';
 
 const router = express.Router();
 
+const isTestEnv = process.env.NODE_ENV === 'test';
+
+// Rate Limiter for public GET endpoints (60 req/min per IP)
+const publicGetLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 60,
+  skip: (req) => isTestEnv && !req.headers['x-test-rate-limit'],
+  message: { error: 'Too many requests. Please wait a minute.' },
+  standardHeaders: true,
+  legacyHeaders: false
+});
+
 const VALID_DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
-// GET faculty availability: public to all authenticated users (Students, Faculty, Admin)
+// GET faculty availability: Public read-only access
+// Whitelisted safe fields: name, department, designation, status, schedule
 // Automatically computes free periods across all 4 years & sections, merged with manual overrides and global leaves
-router.get('/availability', authenticateToken, (req, res) => {
+router.get('/availability', publicGetLimiter, optionalAuthenticateToken, (req, res) => {
   try {
     const { day: filterDay, search, date: filterDate } = req.query;
 
@@ -179,13 +193,14 @@ router.get('/availability', authenticateToken, (req, res) => {
         }
       }
 
-      return {
-        id: faculty.id,
-        register_id: faculty.register_id,
+      // Whitelist safe public fields: name, department, designation, status, schedule
+      // SECURITY RULE: Never return phone, register_id, qualification, or id for public callers
+      const isPrivileged = req.user && (req.user.role === 'faculty' || req.user.role === 'admin');
+
+      const item = {
         name: faculty.name,
         department: faculty.department,
         designation: faculty.designation,
-        qualification: faculty.qualification,
         status: faculty.status || 'active',
         faculty_status: isOnLeave ? 'leave' : isBusy ? 'busy' : 'active',
         is_on_leave: isOnLeave,
@@ -199,6 +214,14 @@ router.get('/availability', authenticateToken, (req, res) => {
         total_overrides: totalOverrides,
         schedule
       };
+
+      if (isPrivileged) {
+        item.id = faculty.id;
+        item.register_id = faculty.register_id;
+        item.qualification = faculty.qualification;
+      }
+
+      return item;
     });
 
     res.json({
@@ -434,15 +457,17 @@ router.delete('/overrides/:day/:period', authenticateToken, (req, res) => {
   }
 });
 
-// GET /api/faculty/leaves
-// Accessible to all authenticated users (Students, Faculty, Admin)
-router.get('/leaves', authenticateToken, (req, res) => {
+// GET /api/faculty/leaves: Public read-only access for current and upcoming leaves
+router.get('/leaves', publicGetLimiter, optionalAuthenticateToken, (req, res) => {
   try {
     const { date, faculty_id } = req.query;
+    const isPrivileged = req.user && (req.user.role === 'faculty' || req.user.role === 'admin');
+
     let query = `
-      SELECT fl.id, fl.faculty_id, fl.faculty_name, fl.leave_date, fl.leave_date AS date, 
+      SELECT fl.id, fl.faculty_name, fl.leave_date, fl.leave_date AS date, 
              fl.status, fl.reason, fl.created_at,
-             u.register_id, u.register_id AS faculty_register_id, u.designation, u.qualification
+             u.designation
+             ${isPrivileged ? ', fl.faculty_id, u.register_id, u.register_id AS faculty_register_id, u.qualification' : ''}
       FROM faculty_leaves fl
       LEFT JOIN users u ON fl.faculty_id = u.id
       WHERE 1=1
@@ -455,7 +480,7 @@ router.get('/leaves', authenticateToken, (req, res) => {
       query += ' AND fl.leave_date = ?';
       params.push(date);
     }
-    if (faculty_id) {
+    if (faculty_id && isPrivileged) {
       query += ' AND fl.faculty_id = ?';
       params.push(parseInt(faculty_id, 10));
     }

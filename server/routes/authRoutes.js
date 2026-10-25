@@ -44,12 +44,13 @@ function validatePhone(phone) {
   return clean.length === 10;
 }
 
-// Registration: Students & Faculty (Public)
+// Registration: Faculty (Public)
 // SECURITY RULE: Administrators can NEVER be created via public self-registration.
+// Student accounts are no longer maintained; timetables are public without an account.
 // Faculty accounts are created with status 'pending' and require Admin activation.
 router.post('/register', (req, res) => {
   try {
-    const { name, register_id, password, role, phone, year, designation } = req.body;
+    const { name, register_id, password, role, phone, designation } = req.body;
 
     if (!name || !register_id || !password || !role) {
       return res.status(400).json({ error: 'Name, Register ID / Employee ID, password, and role are required.' });
@@ -64,8 +65,15 @@ router.post('/register', (req, res) => {
       });
     }
 
-    if (!['student', 'faculty'].includes(cleanRole)) {
-      return res.status(400).json({ error: 'Invalid role. Role must be student or faculty.' });
+    // STRICT BLOCK: Student accounts are no longer registered or supported
+    if (cleanRole === 'student') {
+      return res.status(400).json({
+        error: 'Student accounts are no longer registered or supported. Timetables are publicly accessible without an account.'
+      });
+    }
+
+    if (cleanRole !== 'faculty') {
+      return res.status(400).json({ error: 'Invalid role. Only faculty accounts can be self-registered.' });
     }
 
     if (!validateName(name)) {
@@ -87,15 +95,6 @@ router.post('/register', (req, res) => {
 
     const cleanId = register_id.trim().toUpperCase();
 
-    // Students must specify year (1st-4th)
-    let studentYear = null;
-    if (cleanRole === 'student') {
-      studentYear = parseInt(year, 10);
-      if (![1, 2, 3, 4].includes(studentYear)) {
-        return res.status(400).json({ error: 'Student registration requires year to be 1, 2, 3, or 4.' });
-      }
-    }
-
     // Check for duplicate Register ID / Employee ID
     const existing = db.prepare('SELECT id, register_id FROM users WHERE UPPER(register_id) = ?').get(cleanId);
     if (existing) {
@@ -105,43 +104,31 @@ router.post('/register', (req, res) => {
     }
 
     const passwordHash = bcrypt.hashSync(password, 10);
-    const userDesignation = designation ? designation.trim() : (cleanRole === 'faculty' ? 'Faculty Member' : 'Student');
+    const userDesignation = designation && designation.trim() ? designation.trim() : 'Faculty Member';
     
-    // SECURITY POLICY:
-    // Students get active status immediately.
-    // Faculty accounts start as 'pending' until approved by an administrator to protect student PII.
-    const initialStatus = cleanRole === 'faculty' ? 'pending' : 'active';
+    // Faculty accounts start as 'pending' until approved by an administrator
+    const initialStatus = 'pending';
 
     const stmt = db.prepare(`
-      INSERT INTO users (register_id, name, password_hash, role, phone, year, department, designation, status, must_change_password)
-      VALUES (?, ?, ?, ?, ?, ?, 'AIML', ?, ?, 0)
+      INSERT INTO users (register_id, name, password_hash, role, phone, department, designation, status, must_change_password)
+      VALUES (?, ?, ?, 'faculty', ?, 'AIML', ?, ?, 0)
     `);
 
-    const info = stmt.run(cleanId, name.trim(), passwordHash, cleanRole, phone ? phone.trim() : null, studentYear, userDesignation, initialStatus);
+    const info = stmt.run(cleanId, name.trim(), passwordHash, phone ? phone.trim() : null, userDesignation, initialStatus);
     const newUserId = info.lastInsertRowid;
 
     try {
       db.prepare(`
         INSERT INTO audit_logs (action, target_user_id, details)
         VALUES ('USER_REGISTER', ?, ?)
-      `).run(newUserId, `New ${cleanRole} registered: ${cleanId} (${name.trim()}) with status: ${initialStatus}`);
+      `).run(newUserId, `New faculty registered: ${cleanId} (${name.trim()}) with status: ${initialStatus}`);
     } catch (e) {}
 
-    const user = db.prepare('SELECT id, register_id, name, role, phone, year, department, designation, status FROM users WHERE id = ?').get(newUserId);
+    const user = db.prepare('SELECT id, register_id, name, role, phone, department, designation, status FROM users WHERE id = ?').get(newUserId);
 
-    if (cleanRole === 'faculty') {
-      return res.status(201).json({
-        message: 'Faculty registration submitted successfully! Your account is pending administrator approval before you can sign in.',
-        status: 'pending',
-        user
-      });
-    }
-
-    // Students receive active token immediately
-    const token = generateToken(user);
     return res.status(201).json({
-      message: 'Student registered successfully!',
-      token,
+      message: 'Faculty registration submitted successfully! Your account is pending administrator approval before you can sign in.',
+      status: 'pending',
       user
     });
   } catch (error) {
@@ -206,7 +193,7 @@ router.post('/register-admin', authenticateToken, requireAdmin, (req, res) => {
   }
 });
 
-// Login: Student, Faculty, Admin
+// Login: Faculty & Admin
 router.post('/login', (req, res) => {
   try {
     const { register_id, password, expected_role } = req.body;
@@ -215,15 +202,21 @@ router.post('/login', (req, res) => {
       return res.status(400).json({ error: 'Register ID / Employee ID and password are required.' });
     }
 
+    if (expected_role === 'student') {
+      return res.status(400).json({
+        error: 'Student accounts are no longer supported. Timetables are publicly accessible without signing in.'
+      });
+    }
+
     const cleanId = register_id.trim();
     const user = db.prepare('SELECT * FROM users WHERE UPPER(register_id) = UPPER(?)').get(cleanId);
 
-    if (!user) {
+    if (!user || user.role === 'student') {
       try {
         db.prepare(`
           INSERT INTO audit_logs (action, details)
           VALUES ('LOGIN_FAILED', ?)
-        `).run(`Failed login attempt for unknown ID: ${cleanId} from IP: ${req.ip}`);
+        `).run(`Failed login attempt for unknown or retired ID: ${cleanId} from IP: ${req.ip}`);
       } catch (e) {}
       return res.status(401).json({ error: 'Invalid Register ID or password.' });
     }
@@ -261,16 +254,14 @@ router.post('/login', (req, res) => {
 
     // Single Active Login Check for Faculty & Admin
     let activeSessionInfo = null;
-    if (user.role === 'faculty' || user.role === 'admin') {
-      cleanStaleSessions(35000);
-      const existingSession = getActiveSessionByUserId(user.id, 35000);
-      if (existingSession) {
-        return res.status(409).json({
-          error: 'This account is already logged in on another device or browser. Please log out from the existing session before signing in again.'
-        });
-      }
-      activeSessionInfo = createActiveSession(user.id, user.role);
+    cleanStaleSessions(35000);
+    const existingSession = getActiveSessionByUserId(user.id, 35000);
+    if (existingSession) {
+      return res.status(409).json({
+        error: 'This account is already logged in on another device or browser. Please log out from the existing session before signing in again.'
+      });
     }
+    activeSessionInfo = createActiveSession(user.id, user.role);
 
     const userSafe = {
       id: user.id,
@@ -278,7 +269,6 @@ router.post('/login', (req, res) => {
       name: user.name,
       role: user.role,
       phone: user.phone,
-      year: user.year,
       department: user.department,
       designation: user.designation,
       status: user.status || 'active',
@@ -438,10 +428,9 @@ router.post('/forgot-password/request-otp', async (req, res) => {
 
     const cleanRole = (role || '').trim().toLowerCase();
 
-    // STRICT PRIVACY / SECURITY RULE: Students cannot self-service reset passwords via OTP!
     if (cleanRole === 'student') {
-      return res.status(403).json({
-        error: 'Student password resets cannot be performed via self-service OTP. Please contact an authorized Faculty mentor or Department Administrator.'
+      return res.status(400).json({
+        error: 'Student accounts do not exist. Timetables are publicly accessible without an account.'
       });
     }
 
@@ -654,7 +643,7 @@ router.post('/forgot-password/reset-password', (req, res) => {
 // Get current session user
 router.get('/me', authenticateToken, (req, res) => {
   try {
-    const user = db.prepare('SELECT id, register_id, name, role, phone, year, department, designation, status, must_change_password FROM users WHERE id = ?').get(req.user.id);
+    const user = db.prepare('SELECT id, register_id, name, role, phone, department, designation, status, must_change_password FROM users WHERE id = ?').get(req.user.id);
     if (!user) {
       return res.status(404).json({ error: 'User not found' });
     }

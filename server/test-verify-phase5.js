@@ -70,9 +70,6 @@ async function runPhase5Verification() {
   db.prepare('DELETE FROM active_sessions').run();
   db.prepare('DELETE FROM password_resets').run();
   db.prepare('DELETE FROM faculty_overrides').run();
-  db.prepare("UPDATE users SET password_hash = ? WHERE register_id = '22091A3324'").run(
-    (await import('bcryptjs')).default.hashSync('student123', 10)
-  );
   db.prepare("UPDATE users SET password_hash = ? WHERE register_id = 'admin01'").run(
     (await import('bcryptjs')).default.hashSync('1352468', 10)
   );
@@ -132,41 +129,45 @@ async function runPhase5Verification() {
   });
   assert('register-admin with fake token rejected with 401 or 403', [401, 403].includes(fakeAdminEndpoint.status));
 
-  console.log('\n--- 4. Student Calling Directory Endpoints (Expect 403) ---');
-  // Login as student
+  console.log('\n--- 4. Student Removal Verification (Expect 400/404) ---');
+  // Check 4a: Student login attempt rejected (400 or 401)
   const studentLogin = await request('/api/auth/login', {
     method: 'POST',
     body: { register_id: '22091A3324', password: 'student123' }
   });
-  assert('Student login succeeds', studentLogin.status === 200 && studentLogin.data.token);
-  const studentToken = studentLogin.data.token;
+  assert('Student login attempt rejected (400 or 401)', [400, 401].includes(studentLogin.status));
 
-  // Check 4a: Student calling /api/directory/students
-  const stDirRes = await request('/api/directory/students', { token: studentToken });
-  assert('Student accessing student directory returns 403 Forbidden', stDirRes.status === 403);
-
-  // Check 4b: Student calling /api/directory/faculty
-  const facDirRes = await request('/api/directory/faculty', { token: studentToken });
-  assert('Student accessing faculty directory returns 403 Forbidden', facDirRes.status === 403);
-
-  // Check 4c: Student calling /api/directory/audit-logs
-  const auditRes = await request('/api/directory/audit-logs', { token: studentToken });
-  assert('Student accessing security audit logs returns 403 Forbidden', auditRes.status === 403);
-
-  // Check 4d: Student calling DELETE /api/directory/audit-logs
-  const delAuditRes = await request('/api/directory/audit-logs', {
-    method: 'DELETE',
-    token: studentToken
+  // Check 4b: Student registration rejected with 400 Bad Request
+  const studentReg = await request('/api/auth/register', {
+    method: 'POST',
+    body: {
+      name: 'Test Student',
+      register_id: '24091A3399',
+      password: 'studentpass123',
+      role: 'student',
+      phone: '9876543210'
+    }
   });
-  assert('Student deleting audit logs returns 403 Forbidden', delAuditRes.status === 403);
+  assert('Student registration rejected with 400 Bad Request', studentReg.status === 400);
 
-  // Check 4e: Student calling reset password for another student
+  // Check 4c: GET /api/directory/students returns 404
+  const stDirRes = await request('/api/directory/students');
+  assert('GET /api/directory/students returns 404 Not Found', stDirRes.status === 404);
+
+  // Check 4d: POST /api/directory/students/2/reset-password returns 404
   const stResetRes = await request('/api/directory/students/2/reset-password', {
     method: 'POST',
-    token: studentToken,
     body: { new_password: 'HackedPassword123' }
   });
-  assert('Student resetting student password returns 403 Forbidden', stResetRes.status === 403);
+  assert('POST /api/directory/students/:id/reset-password returns 404 Not Found', stResetRes.status === 404);
+
+  // Check 4e: Unauthenticated access to faculty directory rejected (401)
+  const facDirRes = await request('/api/directory/faculty');
+  assert('Unauthenticated access to faculty directory returns 401 Unauthorized', facDirRes.status === 401);
+
+  // Check 4f: Unauthenticated access to audit logs rejected (401)
+  const auditRes = await request('/api/directory/audit-logs');
+  assert('Unauthenticated access to security audit logs returns 401 Unauthorized', auditRes.status === 401);
 
   console.log('\n--- 5. SSE Real-Time Sync via Simulated Proxy ---');
   // Login as admin for timetable operations
@@ -180,7 +181,7 @@ async function runPhase5Verification() {
   // 5a. Request SSE single-use ticket behind reverse proxy headers
   const ticketRes = await request('/api/timetables/events/ticket', {
     method: 'POST',
-    token: studentToken,
+    token: adminToken,
     headers: {
       'X-Forwarded-For': '203.0.113.195, 10.0.0.1',
       'X-Forwarded-Proto': 'https'
@@ -259,17 +260,17 @@ async function runPhase5Verification() {
   sseReq.destroy();
 
   console.log('\n--- 6. PDF Export Check & Data Integrity ---');
-  // 6a. Verify student view masks contact details in PDF metadata
-  const studentTimetable = await request(`/api/timetables?year=2&section_id=${sec2A.id}`, { token: studentToken });
-  assert('Timetable API returns faculty_details array for PDF export', Array.isArray(studentTimetable.data?.faculty_details));
-  const studentFacultyDetails = studentTimetable.data?.faculty_details || [];
-  const allPhonesMaskedForStudent = studentFacultyDetails.length > 0 && studentFacultyDetails.every(f => f.phone === 'Protected' || f.phone === '-');
-  assert('Student role has all faculty phone numbers masked with "Protected" for PDF', allPhonesMaskedForStudent);
+  // 6a. Verify public timetable view strictly excludes contact details in PDF metadata
+  const publicTimetable = await request(`/api/timetables?year=2&section_id=${sec2A.id}`);
+  assert('Timetable API returns faculty_details array for PDF export', Array.isArray(publicTimetable.data?.faculty_details));
+  const publicFacultyDetails = publicTimetable.data?.faculty_details || [];
+  const allPhonesMaskedForPublic = publicFacultyDetails.length > 0 && publicFacultyDetails.every(f => !f.phone || f.phone === '—');
+  assert('Public view has all faculty phone numbers excluded / blank for PDF', allPhonesMaskedForPublic);
 
   // 6b. Verify admin view provides genuine contact details in PDF metadata
   const adminTimetable = await request(`/api/timetables?year=2&section_id=${sec2A.id}`, { token: adminToken });
   const adminFacultyDetails = adminTimetable.data?.faculty_details || [];
-  const adminHasRealPhones = adminFacultyDetails.some(f => f.phone && f.phone !== 'Protected' && f.phone !== '-');
+  const adminHasRealPhones = adminFacultyDetails.some(f => f.phone && f.phone !== '—');
   assert('Admin role has unmasked contact numbers for official administrative PDF export', adminHasRealPhones);
 
 

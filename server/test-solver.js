@@ -99,7 +99,7 @@ async function runSolverVerification() {
   assert('Diagnostic Failure: Surfaces exact constraint failure reason', typeof failResult.constraint === 'string' && failResult.error.length > 0);
 
   // 7. Verify API /timetables endpoint returns faculty_details with RBAC phone privacy
-  // Query DB directly simulating student vs admin
+  // Query DB directly simulating public vs admin
   const sampleSec = db.prepare('SELECT id, year FROM sections LIMIT 1').get();
   const sampleFaculty = db.prepare(`
     SELECT DISTINCT t.subject, t.faculty_name, u.phone

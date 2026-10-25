@@ -71,7 +71,6 @@ async function runTests() {
     db.prepare('DELETE FROM active_sessions').run();
     db.prepare('DELETE FROM password_resets').run();
     db.prepare('DELETE FROM faculty_overrides').run();
-    db.prepare("DELETE FROM users WHERE register_id = '24091A3399'").run();
     db.prepare("UPDATE users SET password_hash = ? WHERE register_id = 'FAC001'").run(bcrypt.hashSync('12345678', 10));
     populateTimetablesData();
 
@@ -83,42 +82,31 @@ async function runTests() {
     assert('Admin login successful (admin01)', adminLogin.status === 200 && adminLogin.data.token, JSON.stringify(adminLogin));
     const adminToken = adminLogin.data.token;
 
-    // 3. Duplicate ID Rejection
+    // 3. Registration of role 'student' is strictly rejected with 400 Bad Request
+    const regStudentAttempt = await request('/api/auth/register', {
+      method: 'POST',
+      body: {
+        name: 'Rejected Student',
+        register_id: '24091A3399',
+        password: 'studentpass123',
+        role: 'student',
+        phone: '9876500001'
+      }
+    });
+    assert('Student registration is rejected with 400 Bad Request', regStudentAttempt.status === 400);
+
+    // 4. Duplicate ID Rejection
     const dupRegister = await request('/api/auth/register', {
       method: 'POST',
       body: {
         name: 'Imposter Admin',
         register_id: 'admin01',
         password: 'password123',
-        role: 'student',
-        year: 1,
+        role: 'faculty',
         phone: '9999999999'
       }
     });
     assert('Duplicate Register ID rejected with 409', dupRegister.status === 409);
-
-    // 4. Register new Student
-    const testStudentId = '24091A3399';
-    const regStudent = await request('/api/auth/register', {
-      method: 'POST',
-      body: {
-        name: 'Test Student John',
-        register_id: testStudentId,
-        password: 'studentpass123',
-        role: 'student',
-        year: 3,
-        phone: '9876500001'
-      }
-    });
-    assert('New student registration handled', regStudent.status === 201 || regStudent.status === 409);
-
-    // Login as student
-    const studentLogin = await request('/api/auth/login', {
-      method: 'POST',
-      body: { register_id: testStudentId, password: 'studentpass123' }
-    });
-    assert('Student login succeeds', studentLogin.status === 200 && studentLogin.data.token);
-    let studentToken = studentLogin.data.token;
 
     // Phase 2 Security Tests
     // Check 1: Public registration with admin role is rejected
@@ -169,42 +157,42 @@ async function runTests() {
       body: { register_id: testFacId, password: 'facultypassword123' }
     });
     assert('Approved faculty can now login successfully (200)', approvedLogin.status === 200 && approvedLogin.data.token);
+    const testApprovedFacToken = approvedLogin.data.token;
 
-    // Cleanup test faculty
-    db.prepare("DELETE FROM users WHERE register_id = ?").run(testFacId);
-
-    // Check 4: Change Password endpoint for authenticated user
+    // Check 4: Change Password endpoint for authenticated faculty user
     const changePwFailWrongCurrent = await request('/api/auth/change-password', {
       method: 'POST',
-      token: studentToken,
+      token: testApprovedFacToken,
       body: {
         current_password: 'wrongpassword',
-        new_password: 'newstudentpass456',
-        confirm_password: 'newstudentpass456'
+        new_password: 'newfacpass456',
+        confirm_password: 'newfacpass456'
       }
     });
     assert('Change password rejected on incorrect current password (401)', changePwFailWrongCurrent.status === 401);
 
     const changePwSuccess = await request('/api/auth/change-password', {
       method: 'POST',
-      token: studentToken,
+      token: testApprovedFacToken,
       body: {
-        current_password: 'studentpass123',
-        new_password: 'newstudentpass456',
-        confirm_password: 'newstudentpass456'
+        current_password: 'facultypassword123',
+        new_password: 'newfacpass456',
+        confirm_password: 'newfacpass456'
       }
     });
     assert('Change password succeeds with valid credentials (200)', changePwSuccess.status === 200);
 
-    // Re-authenticate student with new password
-    const studentNewPwLogin = await request('/api/auth/login', {
+    // Re-authenticate faculty with new password
+    const facNewPwLogin = await request('/api/auth/login', {
       method: 'POST',
-      body: { register_id: testStudentId, password: 'newstudentpass456' }
+      body: { register_id: testFacId, password: 'newfacpass456' }
     });
-    assert('Student logs in with changed password', studentNewPwLogin.status === 200);
-    studentToken = studentNewPwLogin.data.token;
+    assert('Faculty logs in with changed password', facNewPwLogin.status === 200);
 
-    // 5. Faculty Login
+    // Cleanup test faculty
+    db.prepare("DELETE FROM users WHERE register_id = ?").run(testFacId);
+
+    // 5. Faculty Login (FAC001)
     const facLogin = await request('/api/auth/login', {
       method: 'POST',
       body: { register_id: 'FAC001', password: '12345678' }
@@ -212,24 +200,54 @@ async function runTests() {
     assert('Faculty login succeeds (FAC001)', facLogin.status === 200 && facLogin.data.token);
     let facToken = facLogin.data.token;
 
-    // 6. PRIVACY RULE TEST: Student accessing student/faculty directory must be rejected (403)!
-    const studentAccessingDir = await request('/api/directory/students', { token: studentToken });
-    assert('Student accessing student directory rejected with 403 Forbidden', studentAccessingDir.status === 403);
+    // 6. Former Student Endpoints are Removed (404 Not Found)
+    const getStudentsRes = await request('/api/directory/students', { token: adminToken });
+    assert('GET /api/directory/students returns 404 Not Found', getStudentsRes.status === 404);
 
-    const studentAccessingFacDir = await request('/api/directory/faculty', { token: studentToken });
-    assert('Student accessing faculty directory rejected with 403 Forbidden', studentAccessingFacDir.status === 403);
+    const resetStudentRes = await request('/api/directory/students/1/reset-password', {
+      method: 'POST',
+      token: adminToken,
+      body: { new_password: 'password123' }
+    });
+    assert('POST /api/directory/students/:id/reset-password returns 404 Not Found', resetStudentRes.status === 404);
 
-    // 7. PRIVACY RULE TEST: Faculty accessing directories must succeed (200)!
-    const facAccessingDir = await request('/api/directory/students', { token: facToken });
-    assert('Faculty accessing student directory succeeds with 200 OK', facAccessingDir.status === 200 && Array.isArray(facAccessingDir.data.students));
+    // 7. Directory Access Guards: Unauthenticated access rejected with 401
+    const unauthFacDir = await request('/api/directory/faculty');
+    assert('Unauthenticated access to faculty directory rejected with 401', unauthFacDir.status === 401);
 
     const facAccessingFacDir = await request('/api/directory/faculty', { token: facToken });
     assert('Faculty accessing faculty directory succeeds with 200 OK', facAccessingFacDir.status === 200 && Array.isArray(facAccessingFacDir.data.faculty));
 
-    // 8. Timetable Access: Student can access all 4 years
+    // 8. Public Read-Only APIs (No token required, strictly safe fields)
+    const publicTtRes = await request('/api/timetables?year=3');
+    assert('Public GET /api/timetables succeeds without token (200)', publicTtRes.status === 200 && publicTtRes.data.grid);
+    const pubFacDetails = publicTtRes.data.faculty_details || [];
+    assert('Public timetable faculty details never leak phone numbers', pubFacDetails.every(f => !f.phone || f.phone === '—'));
+    assert('Public timetable faculty details never leak internal register_id', pubFacDetails.every(f => f.register_id === undefined));
+
+    const publicSectionsRes = await request('/api/timetables/sections');
+    assert('Public GET /api/timetables/sections succeeds without token (200)', publicSectionsRes.status === 200 && Array.isArray(publicSectionsRes.data.sections));
+
+    const publicVersionRes = await request('/api/timetables/version');
+    assert('Public GET /api/timetables/version succeeds without token (200)', publicVersionRes.status === 200 && publicVersionRes.data.version > 0);
+
+    const publicAvailRes = await request('/api/faculty/availability');
+    assert('Public GET /api/faculty/availability succeeds without token (200)', publicAvailRes.status === 200 && Array.isArray(publicAvailRes.data.faculty_availability));
+    const pubAvailList = publicAvailRes.data.faculty_availability || [];
+    assert('Public faculty availability strictly strips employee IDs and phones', pubAvailList.every(f => f.register_id === undefined && f.phone === undefined && f.id === undefined));
+
+    const publicLeavesRes = await request('/api/faculty/leaves');
+    assert('Public GET /api/faculty/leaves succeeds without token (200)', publicLeavesRes.status === 200 && Array.isArray(publicLeavesRes.data.leaves));
+    const pubLeavesList = publicLeavesRes.data.leaves || [];
+    assert('Public faculty leaves strictly strips employee IDs and phones', pubLeavesList.every(f => f.register_id === undefined && f.phone === undefined));
+
+    const publicNotifsRes = await request('/api/notifications');
+    assert('Public GET /api/notifications succeeds without token (200)', publicNotifsRes.status === 200 && Array.isArray(publicNotifsRes.data.notifications));
+
+    // Timetable Access: Anonymous visitor can view all 4 years
     for (let yr = 1; yr <= 4; yr++) {
-      const ttRes = await request(`/api/timetables?year=${yr}`, { token: studentToken });
-      assert(`Student can view Year ${yr} timetable`, ttRes.status === 200 && ttRes.data.grid && ttRes.data.grid.Monday);
+      const ttRes = await request(`/api/timetables?year=${yr}`);
+      assert(`Anonymous visitor can view Year ${yr} timetable`, ttRes.status === 200 && ttRes.data.grid && ttRes.data.grid.Monday);
     }
 
     // 9. Admin Section Creation & Timetable Editing
@@ -246,25 +264,29 @@ async function runTests() {
       });
     }
 
-    // Student cannot create section (403)
-    const studentCreateSec = await request('/api/timetables/sections', {
+    // Unauthenticated caller cannot create section (401)
+    const unauthCreateSec = await request('/api/timetables/sections', {
       method: 'POST',
-      token: studentToken,
       body: { year: 3, name: 'Hacked Section' }
     });
-    assert('Student creating section rejected with 403', studentCreateSec.status === 403);
+    assert('Unauthenticated creating section rejected with 401', unauthCreateSec.status === 401);
 
     // 10. Faculty Availability Engine
-    const availRes = await request('/api/faculty/availability', { token: studentToken });
-    assert('Student can view Faculty Availability matrix', availRes.status === 200 && Array.isArray(availRes.data.faculty_availability));
+    const availRes = await request('/api/faculty/availability');
+    assert('Anonymous visitor can view Faculty Availability matrix', availRes.status === 200 && Array.isArray(availRes.data.faculty_availability));
     
     // Verify HOD is strictly excluded from public availability
-    const kishorFac = availRes.data.faculty_availability.find(f => f.register_id === 'FAC001');
-    assert('HOD (FAC001) is strictly excluded from public Faculty Availability matrix', !kishorFac);
+    const kishorFac = availRes.data.faculty_availability.find(f => f.name?.includes('Kishor Kumar') && !f.name?.includes('Bala'));
+    assert('HOD (Dr. G. Kishor Kumar) is strictly excluded from public Faculty Availability matrix', !kishorFac);
 
-    // Verify teaching faculty exists
-    const teachingFac = availRes.data.faculty_availability.find(f => f.register_id === 'FAC002');
-    assert('Teaching Faculty FAC002 (Dr. J. Avinash) has computed schedule with Monday-Saturday', teachingFac && teachingFac.schedule && teachingFac.schedule.Monday);
+    // Verify teaching faculty exists in public availability (by name)
+    const teachingFac = availRes.data.faculty_availability.find(f => f.name?.includes('Avinash'));
+    assert('Teaching Faculty Dr. J. Avinash has computed schedule with Monday-Saturday', teachingFac && teachingFac.schedule && teachingFac.schedule.Monday);
+
+    // Authenticated availability includes register_id
+    const authAvailRes = await request('/api/faculty/availability', { token: facToken });
+    const authTeachingFac = authAvailRes.data.faculty_availability.find(f => f.register_id === 'FAC002');
+    assert('Authenticated availability includes register_id (FAC002)', Boolean(authTeachingFac));
 
     // Login as teaching faculty (FAC002) for override & leave tests
     const fac2Login = await request('/api/auth/login', {
@@ -287,8 +309,8 @@ async function runTests() {
     assert('Faculty can set free-period override', overrideRes.status === 200);
 
     // Verify the override appears in public availability
-    const checkAvail = await request('/api/faculty/availability?day=Thursday', { token: studentToken });
-    const targetFac = checkAvail.data.faculty_availability.find(f => f.register_id === 'FAC002');
+    const checkAvail = await request('/api/faculty/availability?day=Thursday');
+    const targetFac = checkAvail.data.faculty_availability.find(f => f.name?.includes('Avinash'));
     assert('Override is visible in public availability for Thursday Period 3', 
       targetFac && targetFac.schedule.Thursday[3] && targetFac.schedule.Thursday[3].status === 'busy'
     );
@@ -377,7 +399,7 @@ async function runTests() {
     assert('Updating merged period block [1, 2] succeeds with 200 OK', mergedCellUpdate.status === 200);
 
     // 15A. Year 2 Section A Official Source-of-Truth Timetable Verification
-    const y2TtRes = await request(`/api/timetables?year=2&section_id=${secA_Y2.id}`, { token: studentToken });
+    const y2TtRes = await request(`/api/timetables?year=2&section_id=${secA_Y2.id}`);
     assert('2nd Year Section A timetable loads successfully', y2TtRes.status === 200);
     const monY2 = y2TtRes.data.grid.Monday;
     const tueY2 = y2TtRes.data.grid.Tuesday;
@@ -408,7 +430,7 @@ async function runTests() {
 
     // 15B. Year 2 Section B Official Source-of-Truth Timetable Verification
     const secB_Y2 = secRes.data.sections.find(s => s.year === 2 && s.name.includes('B'));
-    const y2SecBTtRes = await request(`/api/timetables?year=2&section_id=${secB_Y2.id}`, { token: studentToken });
+    const y2SecBTtRes = await request(`/api/timetables?year=2&section_id=${secB_Y2.id}`);
     assert('2nd Year Section B timetable loads successfully', y2SecBTtRes.status === 200);
     const monY2B = y2SecBTtRes.data.grid.Monday;
     const tueY2B = y2SecBTtRes.data.grid.Tuesday;
@@ -439,7 +461,7 @@ async function runTests() {
 
     // 15C. Year 2 Section C Official Source-of-Truth Timetable Verification
     const secC_Y2 = secRes.data.sections.find(s => s.year === 2 && s.name.includes('C'));
-    const y2SecCTtRes = await request(`/api/timetables?year=2&section_id=${secC_Y2.id}`, { token: studentToken });
+    const y2SecCTtRes = await request(`/api/timetables?year=2&section_id=${secC_Y2.id}`);
     assert('2nd Year Section C timetable loads successfully', y2SecCTtRes.status === 200);
     const monY2C = y2SecCTtRes.data.grid.Monday;
     const tueY2C = y2SecCTtRes.data.grid.Tuesday;
@@ -470,7 +492,7 @@ async function runTests() {
 
     // 15D. Year 2 Section D Official Source-of-Truth Timetable Verification
     const secD_Y2 = secRes.data.sections.find(s => s.year === 2 && s.name.includes('D'));
-    const y2SecDTtRes = await request(`/api/timetables?year=2&section_id=${secD_Y2.id}`, { token: studentToken });
+    const y2SecDTtRes = await request(`/api/timetables?year=2&section_id=${secD_Y2.id}`);
     assert('2nd Year Section D timetable loads successfully', y2SecDTtRes.status === 200);
     const monY2D = y2SecDTtRes.data.grid.Monday;
     const tueY2D = y2SecDTtRes.data.grid.Tuesday;
@@ -501,7 +523,7 @@ async function runTests() {
 
     // 15E. Year 3 Section A Official Source-of-Truth Timetable Verification (Photo Source)
     const secA_Y3 = secRes.data.sections.find(s => s.year === 3 && s.name.includes('A'));
-    const y3SecATtRes = await request(`/api/timetables?year=3&section_id=${secA_Y3.id}`, { token: studentToken });
+    const y3SecATtRes = await request(`/api/timetables?year=3&section_id=${secA_Y3.id}`);
     assert('3rd Year Section A timetable loads successfully', y3SecATtRes.status === 200);
     const monY3A = y3SecATtRes.data.grid.Monday;
     const tueY3A = y3SecATtRes.data.grid.Tuesday;
@@ -547,7 +569,7 @@ async function runTests() {
 
     // 15F. Year 3 Section B Official Source-of-Truth Timetable Verification (Photo Source)
     const secB_Y3 = secRes.data.sections.find(s => s.year === 3 && s.name.includes('B'));
-    const y3SecBTtRes = await request(`/api/timetables?year=3&section_id=${secB_Y3.id}`, { token: studentToken });
+    const y3SecBTtRes = await request(`/api/timetables?year=3&section_id=${secB_Y3.id}`);
     assert('3rd Year Section B timetable loads successfully', y3SecBTtRes.status === 200);
     const monY3B = y3SecBTtRes.data.grid.Monday;
     const tueY3B = y3SecBTtRes.data.grid.Tuesday;
@@ -595,7 +617,7 @@ async function runTests() {
 
     // 15G. Year 3 Section C Official Source-of-Truth Timetable Verification (Photo Source)
     const secC_Y3 = secRes.data.sections.find(s => s.year === 3 && s.name.includes('C'));
-    const y3SecCTtRes = await request(`/api/timetables?year=3&section_id=${secC_Y3.id}`, { token: studentToken });
+    const y3SecCTtRes = await request(`/api/timetables?year=3&section_id=${secC_Y3.id}`);
     assert('3rd Year Section C timetable loads successfully', y3SecCTtRes.status === 200);
     const monY3C = y3SecCTtRes.data.grid.Monday;
     const tueY3C = y3SecCTtRes.data.grid.Tuesday;
@@ -643,7 +665,7 @@ async function runTests() {
 
     // 15H. Year 3 Section D Official Source-of-Truth Timetable Verification (Photo Source)
     const secD_Y3 = secRes.data.sections.find(s => s.year === 3 && s.name.includes('D'));
-    const y3SecDTtRes = await request(`/api/timetables?year=3&section_id=${secD_Y3.id}`, { token: studentToken });
+    const y3SecDTtRes = await request(`/api/timetables?year=3&section_id=${secD_Y3.id}`);
     assert('3rd Year Section D timetable loads successfully', y3SecDTtRes.status === 200);
     const monY3D = y3SecDTtRes.data.grid.Monday;
     const tueY3D = y3SecDTtRes.data.grid.Tuesday;
@@ -716,7 +738,7 @@ async function runTests() {
     assert('HOD user preserved in database: total faculty in users table is 19', dbFacultyCount === 19);
 
     // 16. First-Year Timetable & AIML-Only Faculty Assignment Verification
-    const y1Timetable = await request('/api/timetables?year=1', { token: studentToken });
+    const y1Timetable = await request('/api/timetables?year=1');
     assert('First-Year timetable loads successfully', y1Timetable.status === 200);
     const monY1 = y1Timetable.data.grid.Monday;
     assert('First-Year Monday has all 7 periods configured', monY1 && Object.keys(monY1).length === 7);
@@ -726,7 +748,7 @@ async function runTests() {
     let y1Violation = null;
     const y1Sections = secRes.data.sections.filter(s => s.year === 1);
     for (const s of y1Sections) {
-      const secTt = await request(`/api/timetables?year=1&section_id=${s.id}`, { token: studentToken });
+      const secTt = await request(`/api/timetables?year=1&section_id=${s.id}`);
       if (secTt.status === 200 && secTt.data.grid) {
         for (const day of Object.keys(secTt.data.grid)) {
           for (const p of Object.keys(secTt.data.grid[day])) {
@@ -766,7 +788,7 @@ async function runTests() {
       }
     });
     assert('API updates Year 1 non-AIML cell', assignNonAimlRes.status === 200);
-    const checkY1Cell = await request(`/api/timetables?year=1&section_id=${testY1Sec.id}`, { token: studentToken });
+    const checkY1Cell = await request(`/api/timetables?year=1&section_id=${testY1Sec.id}`);
     assert('API forces faculty_name = "—" for Year 1 non-AIML subject (BEE - A)',
       checkY1Cell.data.grid.Monday[1]?.subject === 'BEE - A' && checkY1Cell.data.grid.Monday[1]?.faculty_name === '—'
     );
@@ -779,7 +801,7 @@ async function runTests() {
     const y2Sections = secRes.data.sections.filter(s => s.year === 2);
     const ALLOWED_Y2 = ['AI', 'ADSA', 'UHV', 'PYP', 'ADSA LAB', 'OOPJ', 'OOPJ LAB', 'PYP LAB'];
     for (const s of y2Sections) {
-      const secTt = await request(`/api/timetables?year=2&section_id=${s.id}`, { token: studentToken });
+      const secTt = await request(`/api/timetables?year=2&section_id=${s.id}`);
       if (secTt.status === 200 && secTt.data.grid) {
         for (const day of Object.keys(secTt.data.grid)) {
           for (const p of Object.keys(secTt.data.grid[day])) {
@@ -819,7 +841,7 @@ async function runTests() {
       }
     });
     assert('API updates Year 2 non-allowed cell', assignNonAllowedY2Res.status === 200);
-    const checkY2Cell = await request(`/api/timetables?year=2&section_id=${testY2Sec.id}`, { token: studentToken });
+    const checkY2Cell = await request(`/api/timetables?year=2&section_id=${testY2Sec.id}`);
     assert('API forces faculty_name = "—" for Year 2 non-allowed subject (DMGT)',
       checkY2Cell.data.grid.Monday[6]?.subject === 'DMGT' && checkY2Cell.data.grid.Monday[6]?.faculty_name === '—'
     );
@@ -864,12 +886,12 @@ async function runTests() {
     });
     assert('Unauthenticated admin registration rejected with 401/403', [401, 403].includes(unauthAdminReg.status));
 
-    // 19. Student Forgot Password Restriction (Students cannot self-service reset via OTP)
+    // 19. Student Role in Forgot Password is rejected (role student no longer valid)
     const studentOtpRequest = await request('/api/auth/forgot-password/request-otp', {
       method: 'POST',
       body: { phone: '9876500001', role: 'student' }
     });
-    assert('Student OTP request rejected with 403 Forbidden', studentOtpRequest.status === 403);
+    assert('Student OTP request rejected with 400 or 403', [400, 403].includes(studentOtpRequest.status));
 
     // 20. Faculty & Admin Forgot Password OTP Workflow
     // Step 20a: Request OTP for Faculty (Dr. G. Kishor Kumar - phone: 9848022331)
@@ -940,60 +962,33 @@ async function runTests() {
     assert('Faculty re-login with restored password succeeded', facRestoredLogin.status === 200 && facRestoredLogin.data.token, JSON.stringify(facRestoredLogin));
     facToken = facRestoredLogin.data?.token;
 
-    // 21. Student Password Management (Faculty & Admin can reset student password)
-    // Step 21a: Find student DB ID for testStudentId
-    const dirStudents = await request('/api/directory/students', { token: facToken });
-    const targetStudent = dirStudents.data.students.find(s => s.register_id === testStudentId);
-    assert('Target student located in directory', Boolean(targetStudent));
+    // 21. Former Student Endpoints & Student Accounts are Removed
+    const dirStudentsCheck = await request('/api/directory/students', { token: facToken });
+    assert('GET /api/directory/students returns 404 Not Found', dirStudentsCheck.status === 404);
 
-    // Step 21b: Faculty resets student password
-    const facResetStudent = await request(`/api/directory/students/${targetStudent.id}/reset-password`, {
+    const resetStudentCheck = await request('/api/directory/students/1/reset-password', {
       method: 'POST',
       token: facToken,
       body: { new_password: 'newstudentpwd99' }
     });
-    assert('Faculty can reset student password directly with 200 OK', facResetStudent.status === 200);
+    assert('POST /api/directory/students/:id/reset-password returns 404 Not Found', resetStudentCheck.status === 404);
 
-    // Step 21c: Student logs in with the newly assigned password
-    const studentLoginNew = await request('/api/auth/login', {
-      method: 'POST',
-      body: { register_id: testStudentId, password: 'newstudentpwd99' }
-    });
-    assert('Student logs in with faculty-reset password', studentLoginNew.status === 200);
-
-    // Step 21d: Student attempting to reset another student's password is rejected (403)
-    const studentUnauthorizedReset = await request(`/api/directory/students/${targetStudent.id}/reset-password`, {
-      method: 'POST',
-      token: studentToken,
-      body: { new_password: 'hackedpassword' }
-    });
-    assert('Student attempting password reset rejected with 403 Forbidden', studentUnauthorizedReset.status === 403);
-
-    // Step 21e: Admin resets student password back to 'studentpass123'
-    const adminResetStudent = await request(`/api/directory/students/${targetStudent.id}/reset-password`, {
-      method: 'POST',
-      token: adminToken,
-      body: { new_password: 'studentpass123' }
-    });
-    assert('Admin can reset student password directly with 200 OK', adminResetStudent.status === 200);
+    // Database verification: Exactly 0 students exist in users table
+    const studentCount = db.prepare("SELECT COUNT(*) as count FROM users WHERE role = 'student'").get();
+    assert('Database contains 0 student rows in users table', studentCount.count === 0);
 
     // 22. Audit Logs Verification
     // Admin can access audit logs
     const auditRes = await request('/api/directory/audit-logs', { token: adminToken });
     assert('Admin can view security audit logs', auditRes.status === 200 && Array.isArray(auditRes.data.logs));
-    const studentResetLog = auditRes.data.logs.find(l => 
-      l.action.includes('RESET_STUDENT_PASSWORD') && 
-      (l.target_user_id === targetStudent.register_id || l.target_user_id === targetStudent.id)
-    );
-    assert('Student password reset is documented in audit logs with performer details', Boolean(studentResetLog));
 
-    // Student cannot access audit logs (403)
-    const studentAuditRes = await request('/api/directory/audit-logs', { token: studentToken });
-    assert('Student viewing audit logs rejected with 403 Forbidden', studentAuditRes.status === 403);
+    // Faculty cannot access audit logs (403)
+    const facultyAuditRes = await request('/api/directory/audit-logs', { token: facToken });
+    assert('Faculty viewing audit logs rejected with 403 Forbidden', facultyAuditRes.status === 403);
 
-    // Student cannot clear audit logs (403)
-    const studentDeleteAuditRes = await request('/api/directory/audit-logs', { method: 'DELETE', token: studentToken });
-    assert('Student clearing audit logs rejected with 403 Forbidden', studentDeleteAuditRes.status === 403);
+    // Unauthenticated caller cannot access audit logs (401)
+    const unauthAuditRes = await request('/api/directory/audit-logs');
+    assert('Unauthenticated access to audit logs rejected with 401', unauthAuditRes.status === 401);
 
     // Admin attempting to clear immutable audit logs is rejected with 403
     const adminClearAuditRes = await request('/api/directory/audit-logs', { method: 'DELETE', token: adminToken });
@@ -1010,7 +1005,7 @@ async function runTests() {
     assert('Dr. C. Shoba Bindu completely absent from faculty directory', !hasShobaInFaculty);
     assert('Prof. Administrator (HOD-AIML) completely absent from faculty directory', !hasProfAdminInFaculty);
 
-    const verifyAvailability = await request('/api/faculty/availability', { token: studentToken });
+    const verifyAvailability = await request('/api/faculty/availability');
     const hasShobaInAvail = verifyAvailability.data.faculty_availability.some(f => /shoba/i.test(f.name));
     const hasProfAdminInAvail = verifyAvailability.data.faculty_availability.some(f => /prof\.?\s*administrator/i.test(f.name));
     assert('Dr. C. Shoba Bindu completely absent from faculty availability', !hasShobaInAvail);
@@ -1042,10 +1037,10 @@ async function runTests() {
       getLeavesRes.data.leaves.some(l => l.date === '2026-09-07' && l.faculty_register_id === 'FAC002')
     );
 
-    // Step 24c: Global Notification created and visible to Student
-    const studentNotifRes = await request('/api/notifications', { token: studentToken });
-    assert('Student can access global notifications', studentNotifRes.status === 200 && Array.isArray(studentNotifRes.data.notifications));
-    const leaveNotif = studentNotifRes.data.notifications.find(n => 
+    // Step 24c: Global Notification created and visible to faculty/admin
+    const notifRes = await request('/api/notifications', { token: fac2Token });
+    assert('Faculty can access global notifications', notifRes.status === 200 && Array.isArray(notifRes.data.notifications));
+    const leaveNotif = notifRes.data.notifications.find(n => 
       n.message.includes('Dr. J. Avinash') && 
       n.message.includes('Leave') && 
       n.type === 'faculty_leave'
@@ -1053,7 +1048,7 @@ async function runTests() {
     assert('Global notification box receives official faculty leave intimation', Boolean(leaveNotif));
 
     // Step 24d: Availability reflects On Leave ONLY for FAC002 on 2026-09-07
-    const availLeaveRes = await request('/api/faculty/availability?date=2026-09-07', { token: studentToken });
+    const availLeaveRes = await request('/api/faculty/availability?date=2026-09-07', { token: fac2Token });
     const fac002Avail = availLeaveRes.data.faculty_availability.find(f => f.register_id === 'FAC002');
     const fac003Avail = availLeaveRes.data.faculty_availability.find(f => f.register_id === 'FAC003');
     assert('Faculty FAC002 is marked ON LEAVE for 2026-09-07', fac002Avail && fac002Avail.is_on_leave === true);
@@ -1061,7 +1056,7 @@ async function runTests() {
     assert('HOD (FAC001) is strictly NOT in availability on leave date', !availLeaveRes.data.faculty_availability.some(f => f.register_id === 'FAC001'));
 
     // Step 24e: Timetable reflects faculty leave without altering class subject
-    const ttLeaveRes = await request('/api/timetables?year=3&date=2026-09-07', { token: studentToken });
+    const ttLeaveRes = await request('/api/timetables?year=3&date=2026-09-07');
     assert('Timetable loads successfully with date query', ttLeaveRes.status === 200 && ttLeaveRes.data.grid);
     const mondaySlots = ttLeaveRes.data.grid.Monday || {};
     const avinashClasses = Object.values(mondaySlots).filter(c => c && c.faculty_name === 'Dr. J. Avinash');
@@ -1091,19 +1086,19 @@ async function runTests() {
     assert('Faculty can set status to Busy for 2026-09-08', setBusyRes.status === 201 && setBusyRes.data.status === 'busy');
 
     // Verify Busy does NOT generate global notifications
-    const busyNotifCheck = await request('/api/notifications', { token: studentToken });
+    const busyNotifCheck = await request('/api/notifications');
     const hasBusyNotif = busyNotifCheck.data.notifications.some(n => 
       n.leave_date === '2026-09-08' || (n.message && n.message.includes('8 September 2026'))
     );
     assert('Busy status strictly does NOT trigger global leave notifications', !hasBusyNotif);
 
     // Verify availability reflects Busy (not On Leave)
-    const availBusyRes = await request('/api/faculty/availability?date=2026-09-08', { token: studentToken });
+    const availBusyRes = await request('/api/faculty/availability?date=2026-09-08', { token: fac2Token });
     const fac002Busy = availBusyRes.data.faculty_availability.find(f => f.register_id === 'FAC002');
     assert('Faculty FAC002 availability reflects Busy', fac002Busy && fac002Busy.is_busy === true && fac002Busy.is_on_leave === false);
 
     // Verify timetable does NOT treat Busy as Leave
-    const ttBusyRes = await request('/api/timetables?year=3&date=2026-09-08', { token: studentToken });
+    const ttBusyRes = await request('/api/timetables?year=3&date=2026-09-08');
     const tueSlots = ttBusyRes.data.grid.Tuesday || {};
     const avinashTueClasses = Object.values(tueSlots).filter(c => c && c.faculty_name === 'Dr. J. Avinash');
     if (avinashTueClasses.length > 0) {
@@ -1121,7 +1116,7 @@ async function runTests() {
     });
     assert('Faculty setting Active status returns 200 OK', setActiveRes.status === 200 && setActiveRes.data.status === 'active');
 
-    const availActiveRes = await request('/api/faculty/availability?date=2026-09-08', { token: studentToken });
+    const availActiveRes = await request('/api/faculty/availability?date=2026-09-08', { token: fac2Token });
     const fac002Active = availActiveRes.data.faculty_availability.find(f => f.register_id === 'FAC002');
     assert('Faculty availability returns to Active / normal availability (not leave, not busy)', 
       fac002Active && !fac002Active.is_busy && !fac002Active.is_on_leave
@@ -1150,7 +1145,7 @@ async function runTests() {
     for (const yr of [1, 2, 3, 4]) {
       const yrSections = secRes.data.sections.filter(s => s.year === yr);
       for (const s of yrSections) {
-        const tt = await request(`/api/timetables?year=${yr}&section_id=${s.id}`, { token: studentToken });
+        const tt = await request(`/api/timetables?year=${yr}&section_id=${s.id}`);
         if (tt.status === 200 && tt.data.grid) {
           for (const day of Object.keys(tt.data.grid)) {
             for (const p of Object.keys(tt.data.grid[day])) {
@@ -1184,7 +1179,7 @@ async function runTests() {
     });
     assert('Admin can update cell to SEM', updateSemRes.status === 200);
 
-    const checkSemTt = await request(`/api/timetables?year=${testSec.year}&section_id=${testSec.id}`, { token: studentToken });
+    const checkSemTt = await request(`/api/timetables?year=${testSec.year}&section_id=${testSec.id}`);
     const p1Cell = checkSemTt.data.grid.Monday[1];
     assert('Updating slot to SEM automatically enforces faculty_name = "—"', p1Cell && p1Cell.subject === 'SEM' && p1Cell.faculty_name === '—');
 
@@ -1203,12 +1198,11 @@ async function runTests() {
     });
 
     // 21. Automated Generation Engine API & RBAC Verification
-    const studentGen = await request('/api/timetables/generate', {
+    const unauthGen = await request('/api/timetables/generate', {
       method: 'POST',
-      token: studentToken,
       body: { section_id: testSec.id }
     });
-    assert('Student attempting automated timetable generation rejected with 403 Forbidden', studentGen.status === 403);
+    assert('Unauthenticated caller attempting automated timetable generation rejected with 401 Unauthorized', unauthGen.status === 401);
 
     const adminDryRunGen = await request('/api/timetables/generate', {
       method: 'POST',
@@ -1273,13 +1267,13 @@ async function runTests() {
     }
 
     // 22. PDF Faculty Details RBAC Phone Privacy Verification
-    const studentTtView = await request(`/api/timetables?year=${testSec.year}&section_id=${testSec.id}`, { token: studentToken });
-    assert('Student timetable response includes faculty_details for PDF footer', Array.isArray(studentTtView.data.faculty_details));
-    const studentProtectedPhone = studentTtView.data.faculty_details.every(f => f.phone === 'Protected' || f.phone === '—');
-    assert('RBAC: Student PDF faculty details masks all faculty phone numbers with Protected', studentProtectedPhone);
+    const publicTtView = await request(`/api/timetables?year=${testSec.year}&section_id=${testSec.id}`);
+    assert('Public timetable response includes faculty_details for PDF footer', Array.isArray(publicTtView.data.faculty_details));
+    const publicProtectedPhone = publicTtView.data.faculty_details.every(f => !f.phone || f.phone === '—');
+    assert('RBAC: Public PDF faculty details strictly excludes faculty phone numbers', publicProtectedPhone);
 
     const adminTtView = await request(`/api/timetables?year=${testSec.year}&section_id=${testSec.id}`, { token: adminToken });
-    const adminHasRealPhone = adminTtView.data.faculty_details.some(f => f.phone && f.phone !== 'Protected' && f.phone !== '—');
+    const adminHasRealPhone = adminTtView.data.faculty_details.some(f => f.phone && f.phone !== '—');
     assert('RBAC: Admin PDF faculty details includes genuine contact numbers', adminHasRealPhone);
 
     // Restore baseline timetables

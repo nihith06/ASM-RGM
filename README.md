@@ -1,107 +1,152 @@
-# AIML — Academic Schedule Management System (RGMCET)
+# RGMCET AIML — Academic Schedule Management System (ASMS)
 
-A fullstack web application for the **Department of Artificial Intelligence & Machine Learning (AIML)** at **Rajeev Gandhi Memorial College of Engineering and Technology (RGMCET)**.
+A production-ready fullstack web application for the **Department of Computer Science & Engineering and Artificial Intelligence & Machine Learning (AIML)** at **Rajeev Gandhi Memorial College of Engineering and Technology (Autonomous)**, Nandyal, Andhra Pradesh.
 
 Designed with a clean, professional academic aesthetic: white background, RGMCET signature navy blue accents (`#002147`), card-based layouts, generous whitespace, rounded corners, and subtle shadows.
 
 ---
 
-## 🌟 Key Features
+## 🌟 Architecture & Access Model (2-Role System + Anonymous Visitor Access)
 
-### 1. Landing Page
-- **Header**: RGMCET initials emblem badge + `RGMCET` title + `Academic Schedule Management` subtitle on the left; quick `Student registration` and `Faculty registration` links on the right.
-- **Hero Section**: Pill badge `"Monday to Saturday · 7 periods a day"`, prominent heading `"WELCOME"`, full college name and department subtitle.
-- **Role Selection Cards**: Three side-by-side role cards for **Student**, **Faculty**, and **Admin** with icons, capability descriptions, and direct portal links.
-- **Footer**: `"New here? Register as a student or register as faculty."`
-- **Instant Demo Access**: 1-click login buttons for Student, Faculty, and Admin for immediate testing.
+The application operates with exactly two authenticated account roles (**Faculty** and **Admin**) alongside comprehensive **Anonymous Read-Only Public Visitor Access** for students and the general public:
 
-### 2. Authentication & Duplicate Prevention
-- **Self-Registration**: Students and Faculty register with Full Name, Register ID / Employee ID, Password, Role, Phone Number, and Year (1st–4th Year for students).
-- **Duplicate Prevention**: Register IDs and Employee IDs are validated against the database with duplicate rejection (HTTP 409 Conflict).
-- **Admin Accounts**: Seeded and managed separately (not self-registered).
-- **Persistent Database**: SQLite database (via Node.js native `node:sqlite`) storing user credentials (bcrypt hashed passwords), profiles, sections, timetables, and overrides.
+1. **Anonymous Read-Only Visitors (Students & Public)**:
+   - No login or registration required.
+   - Immediate access upon opening the portal to:
+     - 6-day academic weekly timetables across all 4 cohorts (1st, 2nd, 3rd, and 4th Year AIML, Sections A–D).
+     - Interactive schedule date picker with cross-referenced real-time faculty leave indicators.
+     - Dynamic Faculty Availability Matrix with live period-by-period free/busy schedules.
+     - Real-time Server-Sent Events (SSE) push updates and current-day leave notification alerts.
+     - High-DPI Official A4 Landscape PDF export.
+   - **Privacy Protection**: Faculty contact details (phone numbers and employee IDs) are strictly excluded from all public API responses and PDF downloads.
 
-### 3. Strict Privacy Rule Enforcement
-- **Privacy Policy**: Student personal details and faculty personal details (contact numbers, student lists) are visible **ONLY** to logged-in faculty members and administrators via the Academic Directory.
-- **Security**: Students cannot view peer phone numbers or faculty phone numbers. API requests from students to `/api/directory/students` and `/api/directory/faculty` are strictly rejected with **HTTP 403 Forbidden**.
+2. **Faculty Members**:
+   - Access to personal consolidated weekly teaching workload across all cohorts.
+   - Dedicated Slot Availability Manager: mark free periods as Busy or Leave with custom notes.
+   - Faculty Directory containing staff profiles and official designations.
+   - Real-time notification broadcast when marking leaves.
 
-### 4. Dynamic Weekly Timetables (Monday – Saturday, 7 Periods)
-- **Comprehensive Access**: Every logged-in user (students, faculty, admin) can view weekly timetables for all 4 years (1st, 2nd, 3rd, and 4th Year AIML) and switch between sections.
-- **Academic Timing (Senior Years: 2nd, 3rd, 4th Year)**:
-  - Period 1: 09:00 AM – 09:50 AM
-  - Period 2: 09:50 AM – 10:40 AM
-  - *Short Break: 10:40 AM – 11:00 AM*
-  - Period 3: 11:00 AM – 11:50 AM
-  - Period 4: 11:50 AM – 12:40 PM
-  - *Lunch Break: 12:40 PM – 01:50 PM*
-  - Period 5: 01:50 PM – 02:40 PM
-  - Period 6: 02:40 PM – 03:30 PM
-  - Period 7: 03:30 PM – 04:20 PM (Faculty availability extends to 05:00 PM)
-- **Academic Timing (1st Year)**:
-  - Period 1: 09:00 AM – 09:50 AM
-  - Period 2: 09:50 AM – 10:40 AM
-  - *Morning Break: 10:40 AM – 11:00 AM*
-  - Period 3: 11:00 AM – 11:50 AM
-  - *Lunch Break: 11:50 AM – 01:00 PM*
-  - Period 4: 01:00 PM – 01:50 PM
-  - Period 5: 01:50 PM – 02:40 PM
-  - *Afternoon Break: 02:40 PM – 03:00 PM*
-  - Period 6: 03:00 PM – 03:50 PM
-  - Period 7: 04:00 PM – 04:50 PM
-- **Admin Timetable Tools**:
-  - Add and delete sections per year (e.g. Section A, Section B, Section C).
-  - Interactive grid editor: click any cell to edit Subject, Faculty, and Room.
-  - Bulk CSV Import & Sample CSV Template download.
-  - Print / PDF export mode.
-
-### 5. Automated Faculty Availability Engine & Overrides
-- **Auto-Computation**: Automatically scans active timetables across all 4 years and sections to identify periods where faculty members are not scheduled for classes.
-- **Manual Overrides**: Faculty can log in and customize their non-teaching slots (e.g. mark as Office Hours, Department Meeting, Student Mentoring, or Unavailable) with custom notes.
-- **Public Dashboard**: Visible to all users with filters by Day (Monday–Saturday), Faculty search, and status filters (Free, Office Hours, Teaching).
-
-### 6. Dedicated Dashboards
-- **Student Dashboard**: Default view of the student's enrolled year timetable, quick switchers for all other years, and faculty availability view.
-- **Faculty Dashboard**: Consolidated personal teaching schedule across all years, Free Period & Office Hours Manager, Directory view, and departmental timetables.
-- **Admin Dashboard**: System metrics, Section Manager, Timetable Editor & CSV Importer, Student Management, and Faculty Management.
+3. **Administrators**:
+   - Comprehensive departmental schedule oversight.
+   - Interactive Timetable Grid editor: update subjects, faculty assignments, and room numbers with real-time clash prevention (faculty double-booking and room collisions).
+   - AI Schedule Generator with constraint satisfaction and dry-run preview.
+   - Section management: add or remove sections per academic year.
+   - Faculty management: register new staff, complete profiles, and approve pending registrations.
+   - Security Audit Trail: immutable logging of all credential modifications and administrative actions.
 
 ---
 
-## 🔑 Pre-Seeded Demo Credentials
+## ⏰ Academic Periods & Timings
 
-| Role | Register / Employee ID | Password | Notes |
+### Senior Cohorts (2nd, 3rd, 4th Year)
+- **Period 1**: 09:00 AM – 09:50 AM
+- **Period 2**: 09:50 AM – 10:40 AM
+- *Morning Break: 10:40 AM – 11:00 AM*
+- **Period 3**: 11:00 AM – 11:50 AM
+- **Period 4**: 11:50 AM – 12:40 PM
+- *Lunch Break: 12:40 PM – 01:50 PM*
+- **Period 5**: 01:50 PM – 02:40 PM
+- **Period 6**: 02:40 PM – 03:30 PM
+- **Period 7**: 03:30 PM – 04:20 PM *(Faculty availability extends to 05:00 PM)*
+
+### 1st Year Cohort
+- **Period 1**: 09:00 AM – 09:50 AM
+- **Period 2**: 09:50 AM – 10:40 AM
+- *Morning Break: 10:40 AM – 11:00 AM*
+- **Period 3**: 11:00 AM – 11:50 AM
+- *Lunch Break: 11:50 AM – 01:00 PM*
+- **Period 4**: 01:00 PM – 01:50 PM
+- **Period 5**: 01:50 PM – 02:40 PM
+- *Afternoon Break: 02:40 PM – 03:00 PM*
+- **Period 6**: 03:00 PM – 03:50 PM
+- **Period 7**: 04:00 PM – 04:50 PM
+
+---
+
+## 🔑 Pre-Seeded Academic Credentials
+
+| Role | Employee / Username ID | Password | Department / Description |
 |---|---|---|---|
-| **Administrator 1** | `admin01` | `1352468` | System Administrator |
-| **Administrator 2** | `admin02` | `1352468` | Academic Administrator |
-| **Administrator 3** | `admin03` | `1352468` | Department Administrator |
-| **Faculty (All Accounts)** | `FAC001` – `FAC019` | `12345678` | 19 official AIML faculty members |
-| **Student (3rd Yr)** | `22091A3324` | `student123` | Karthik Kumar (3rd Year AIML) |
-| **Student (1st Yr)** | `24091A3301` | `student123` | Rahul Varma (1st Year AIML) |
+| **System Administrator** | `admin01` | `1352468` | Full Privileges |
+| **Academic Administrator** | `admin02` | `1352468` | Timetables & Sections |
+| **Department Administrator** | `admin03` | `1352468` | Faculty Operations |
+| **HOD (Dr. G. Kishor Kumar)** | `FAC001` | `12345678` | Head of Department |
+| **Teaching Faculty** | `FAC002` – `FAC019` | `12345678` | AIML Teaching Staff |
 
-*(You can also register any new Student or Faculty member directly through the UI!)*
+---
+
+## 🌐 API Endpoints & Access Control
+
+### Public Read-Only Endpoints (No Authentication Required)
+- `GET /api/health` — Service health status
+- `GET /api/timetables?year=...&section_id=...&date=...` — Weekly timetable grid & whitelisted faculty details
+- `GET /api/timetables/sections?year=...` — List active sections
+- `GET /api/timetables/version` — Current timetable version timestamp
+- `GET /api/timetables/events` — Server-Sent Events (SSE) live push stream (per-IP rate limited)
+- `GET /api/faculty/availability?day=...&date=...` — Public availability matrix (safe fields only)
+- `GET /api/faculty/leaves` — Active faculty leaves (safe fields only)
+- `GET /api/notifications` — Current-day academic intimations (current day only for public visitors)
+
+### Authenticated Endpoints (Bearer JWT Required)
+- `POST /api/auth/login` — Authenticate faculty or admin (brute-force rate limited)
+- `POST /api/auth/logout` — Terminate active session
+- `POST /api/auth/change-password` — Change password for logged-in user
+- `POST /api/auth/forgot-password/request-otp` — Request SMS OTP for password reset
+- `POST /api/auth/forgot-password/verify-otp` — Verify SMS OTP
+- `POST /api/auth/forgot-password/reset-password` — Complete password reset with reset token
+- `GET /api/auth/me` — Current user profile and session validation
+- `GET /api/faculty/my-schedule` — Personal teaching schedule for logged-in faculty
+- `POST /api/faculty/overrides` — Set slot availability (busy/leave)
+- `DELETE /api/faculty/overrides/:day/:period` — Clear slot override
+- `POST /api/faculty/leaves` — Submit date-specific leave notice
+- `DELETE /api/faculty/leaves/:id` — Cancel date-specific leave notice
+- `GET /api/directory/faculty` — Full faculty directory with designations
+
+### Admin-Only Endpoints
+- `POST /api/timetables/cell` — Update timetable cell with conflict detection
+- `POST /api/timetables/sections` — Add new section
+- `DELETE /api/timetables/sections/:id` — Delete section
+- `POST /api/timetables/generate` — Automated constraint solver schedule generator
+- `POST /api/auth/register-admin` — Register additional administrator
+- `GET /api/directory/audit-logs` — Immutable security audit trail
+- `GET /api/directory/audit-logs/export` — Export security audit trail
+- `PUT /api/directory/users/:id` — Update faculty profile details
+- `DELETE /api/directory/users/:id` — Remove faculty member
 
 ---
 
 ## 🚀 Running the Application
 
-### 1. Start the Production Server
+### 1. Production Build & Start
 ```bash
+# Build React client bundle
+npm run build
+
+# Start production server
 npm start
 ```
-The server will start at **`http://localhost:5000`** and serve both the API and the single-page application.
+The server binds to `http://localhost:5000` (or `PORT` env var) and serves both the Express 5 REST API and the compiled React SPA.
 
-### 2. Run in Development Mode (Vite Hot-Reload)
-In one terminal:
+### 2. Development Mode
+Run the backend and frontend development servers concurrently:
 ```bash
+# Terminal 1: Backend server with auto-reload
 npm run server
-```
-In another terminal:
-```bash
+
+# Terminal 2: Vite development server
 npm run client
 ```
-Open **`http://localhost:3000`** for frontend live reload (API requests are automatically proxied to `:5000`).
+Open `http://localhost:3000` (Vite dev server proxies `/api` to `:5000`).
 
-### 3. Run Automated Tests
+### 3. Automated Test Suite
+All tests run against an isolated temporary database (`DB_PATH=server/data/temp-test.db`) without touching `server/data/academic.db`:
 ```bash
-npm run test-api
+# Run all verification suites
+npm test
+
+# Run individual test suites
+npm run test-api        # Full REST API, authentication, RBAC, and timetable verification
+npm run test-solver     # Constraint-satisfaction schedule solver verification
+npm run test-realtime   # SSE push synchronization & reverse proxy verification
+npm run test-verify     # Security hardening and student-removal verification
 ```
-Runs 20 automated tests verifying authentication, duplicate ID rejection, privacy rule enforcement, timetable retrieval, section creation, and the faculty availability engine.

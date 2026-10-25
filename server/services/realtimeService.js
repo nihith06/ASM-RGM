@@ -188,3 +188,17 @@ export function getTimetableVersion() {
 export function getConnectedClientCount() {
   return sseClients.size;
 }
+
+/**
+ * Helper to check if a notification for the same section was sent within last 3 seconds
+ * (debounces rapid successive cell edits by admin)
+ */
+export function shouldCreateTimetableNotification(key) {
+  const now = Date.now();
+  if (lastNotificationKey === key && (now - lastNotificationTime) < 3000) {
+    return false;
+  }
+  lastNotificationKey = key;
+  lastNotificationTime = now;
+  return true;
+}

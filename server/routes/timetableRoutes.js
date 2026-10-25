@@ -8,6 +8,7 @@ import {
   registerClient, 
   broadcastTimetableUpdate, 
   getTimetableVersion,
+  shouldCreateTimetableNotification,
   createSseTicket,
   consumeSseTicket
 } from '../services/realtimeService.js';
@@ -75,12 +76,16 @@ router.post('/events/ticket', optionalAuthenticateToken, (req, res) => {
 
 // GET real-time Server-Sent Events stream (Public with rate limit & connection pool limit)
 router.get('/events', sseLimiter, (req, res) => {
+  if (req.query?.token) {
+    return res.status(401).json({ error: 'Direct token in query string is forbidden. Connect without token or use tickets.' });
+  }
   const ticket = req.query?.ticket;
   if (ticket) {
     const user = consumeSseTicket(ticket);
-    if (user) {
-      req.user = user;
+    if (!user) {
+      return res.status(401).json({ error: 'SSE ticket is invalid or has expired.' });
     }
+    req.user = user;
   }
   registerClient(req, res);
 });
@@ -178,7 +183,7 @@ router.delete('/sections/:id', authenticateToken, requireAdmin, (req, res) => {
 
 // GET timetable: Public read-only access for visitors, students, faculty, and administrators
 // Can view any year (1, 2, 3, 4) and section
-router.get('/', publicGetLimiter, (req, res) => {
+router.get('/', publicGetLimiter, optionalAuthenticateToken, (req, res) => {
   try {
     const year = parseInt(req.query.year || 1, 10);
     let sectionId = req.query.section_id ? parseInt(req.query.section_id, 10) : null;
@@ -278,17 +283,32 @@ router.get('/', publicGetLimiter, (req, res) => {
     // Extract unique faculty teaching in this section for the PDF footer
     // Whitelisted public fields: subject, faculty_name, room
     // SECURITY RULE: Phone numbers and user IDs are NEVER returned in public responses.
-    const facultyListInSec = db.prepare(`
-      SELECT DISTINCT t.subject, t.faculty_name, t.room
-      FROM timetables t
-      WHERE t.year = ? AND t.section_id = ? AND t.subject != '—' AND t.faculty_name != '—'
-      ORDER BY t.subject ASC
-    `).all(year, sectionId);
+    // Authenticated staff (admin/faculty) receive phone numbers for official administration.
+    const isStaff = Boolean(req.user && (req.user.role === 'admin' || req.user.role === 'faculty'));
+
+    let facultyListInSec;
+    if (isStaff) {
+      facultyListInSec = db.prepare(`
+        SELECT DISTINCT t.subject, t.faculty_name, t.room, u.phone
+        FROM timetables t
+        LEFT JOIN users u ON LOWER(TRIM(u.name)) = LOWER(TRIM(t.faculty_name)) AND u.role = 'faculty'
+        WHERE t.year = ? AND t.section_id = ? AND t.subject != '—' AND t.faculty_name != '—'
+        ORDER BY t.subject ASC
+      `).all(year, sectionId);
+    } else {
+      facultyListInSec = db.prepare(`
+        SELECT DISTINCT t.subject, t.faculty_name, t.room
+        FROM timetables t
+        WHERE t.year = ? AND t.section_id = ? AND t.subject != '—' AND t.faculty_name != '—'
+        ORDER BY t.subject ASC
+      `).all(year, sectionId);
+    }
 
     const faculty_details = facultyListInSec.map(item => ({
       subject: item.subject,
       faculty_name: item.faculty_name,
-      room: item.room || ''
+      room: item.room || '',
+      ...(isStaff ? { phone: item.phone || '—' } : {})
     }));
 
     res.json({

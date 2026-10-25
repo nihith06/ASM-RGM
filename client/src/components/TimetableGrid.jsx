@@ -104,7 +104,6 @@ export default function TimetableGrid({ user, initialYear = 3, hideControls = fa
   const [facultySuggestions, setFacultySuggestions] = useState([]);
 
   const isAdmin = user && user.role === 'admin';
-  const isStudent = user && user.role === 'student';
 
   useEffect(() => {
     loadTimetable(selectedYear, selectedSectionId, selectedDate);
@@ -482,7 +481,7 @@ export default function TimetableGrid({ user, initialYear = 3, hideControls = fa
             isAdmin ? 'cursor-pointer hover:bg-navy-50/50' : ''
           }`}
         >
-          <CellContent cell={cell} span={span} periods={mergedPeriods} year={selectedYear} isStudent={isStudent} />
+          <CellContent cell={cell} span={span} periods={mergedPeriods} year={selectedYear} />
         </td>
       );
 
@@ -655,39 +654,37 @@ export default function TimetableGrid({ user, initialYear = 3, hideControls = fa
         )}
       </div>
 
-      {/* Date Filter & Real-Time Leave Status Indicator (Hidden for Students) */}
-      {!isStudent && (
-        <div className="flex flex-wrap items-center justify-between gap-3 bg-white p-4 rounded-2xl border border-slate-200/90 shadow-2xs">
-          <div className="flex items-center gap-2.5">
-            <Calendar className="w-4 h-4 text-navy-900" />
-            <span className="font-bold text-xs text-navy-900 uppercase tracking-wider">Schedule Date:</span>
-            <input
-              type="date"
-              value={selectedDate}
-              onChange={(e) => setSelectedDate(e.target.value)}
-              className="px-3 py-1.5 text-xs font-bold rounded-xl border border-slate-200 bg-slate-50 focus:outline-hidden focus:border-navy-900"
-            />
-            <span className="text-[11px] text-slate-500 hidden sm:inline">
-              (Cross-references active faculty leaves for this date)
-            </span>
-          </div>
+      {/* Date Filter & Real-Time Leave Status Indicator */}
+      <div className="flex flex-wrap items-center justify-between gap-3 bg-white p-4 rounded-2xl border border-slate-200/90 shadow-2xs">
+        <div className="flex items-center gap-2.5">
+          <Calendar className="w-4 h-4 text-navy-900" />
+          <span className="font-bold text-xs text-navy-900 uppercase tracking-wider">Schedule Date:</span>
+          <input
+            type="date"
+            value={selectedDate}
+            onChange={(e) => setSelectedDate(e.target.value)}
+            className="px-3 py-1.5 text-xs font-bold rounded-xl border border-slate-200 bg-slate-50 focus:outline-hidden focus:border-navy-900"
+          />
+          <span className="text-[11px] text-slate-500 hidden sm:inline">
+            (Cross-references active faculty leaves for this date)
+          </span>
+        </div>
 
-          <div className="flex items-center gap-3 text-xs">
-            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-rose-50 border border-rose-200">
-              <span className="w-2.5 h-2.5 rounded-full bg-rose-600 animate-pulse"></span>
-              <span className="font-extrabold text-rose-800 text-[11px]">⚠️ Faculty on Leave</span>
-            </div>
-            <div className="flex items-center gap-1.5 text-slate-600 text-[11px]">
-              <span className="w-2.5 h-2.5 rounded-full bg-indigo-500"></span>
-              <span>Lab</span>
-            </div>
-            <div className="flex items-center gap-1.5 text-slate-600 text-[11px]">
-              <span className="w-2.5 h-2.5 rounded-full bg-slate-400"></span>
-              <span>Theory</span>
-            </div>
+        <div className="flex items-center gap-3 text-xs">
+          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-rose-50 border border-rose-200">
+            <span className="w-2.5 h-2.5 rounded-full bg-rose-600 animate-pulse"></span>
+            <span className="font-extrabold text-rose-800 text-[11px]">⚠️ Faculty on Leave</span>
+          </div>
+          <div className="flex items-center gap-1.5 text-slate-600 text-[11px]">
+            <span className="w-2.5 h-2.5 rounded-full bg-indigo-500"></span>
+            <span>Lab</span>
+          </div>
+          <div className="flex items-center gap-1.5 text-slate-600 text-[11px]">
+            <span className="w-2.5 h-2.5 rounded-full bg-slate-400"></span>
+            <span>Theory</span>
           </div>
         </div>
-      )}
+      </div>
 
       {/* Main Weekly Grid Table */}
       <div className="bg-white rounded-2xl border border-slate-200/90 shadow-academic overflow-hidden">
@@ -1410,7 +1407,7 @@ Monday,3,Cloud Computing,,ET-4034`}
 }
 
 // Subcomponent for rendering individual cell with elegant card look and room number header (matching reference Image 2)
-function CellContent({ cell, span = 1, periods = [], year = 3, isStudent = false }) {
+function CellContent({ cell, span = 1, periods = [], year = 3 }) {
   if (!cell || !cell.subject || cell.subject === '—') {
     return (
       <div className="h-20 flex items-center justify-center text-slate-300 select-none">
@@ -1421,7 +1418,7 @@ function CellContent({ cell, span = 1, periods = [], year = 3, isStudent = false
 
   const isSem = cell.subject?.trim().toUpperCase() === 'SEM';
   const isLab = cell.subject.toLowerCase().includes('lab');
-  const isOnLeave = !isStudent && Boolean(cell.is_on_leave);
+  const isOnLeave = Boolean(cell.is_on_leave);
   const roomDisplay = (cell.room && cell.room.trim() && cell.room.trim() !== '—') ? cell.room.trim() : '—';
 
   return (

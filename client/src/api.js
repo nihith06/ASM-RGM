@@ -3,29 +3,10 @@
 const API_BASE = '/api';
 
 export function getStoredToken() {
-  // 1. Check tab-scoped sessionStorage first (used by Faculty and Admin)
-  const sessionToken = sessionStorage.getItem('rgmcet_auth_token');
-  if (sessionToken) return sessionToken;
-
-  // 2. Check localStorage (permitted ONLY for student accounts)
-  const localUserStr = localStorage.getItem('rgmcet_auth_user');
-  if (localUserStr) {
-    try {
-      const localUser = JSON.parse(localUserStr);
-      if (localUser && localUser.role === 'student') {
-        return localStorage.getItem('rgmcet_auth_token');
-      }
-    } catch (e) {}
-    // If a legacy faculty or admin token was stored in localStorage, purge it
-    localStorage.removeItem('rgmcet_auth_token');
-    localStorage.removeItem('rgmcet_auth_user');
-  }
-
-  return null;
+  return sessionStorage.getItem('rgmcet_auth_token') || null;
 }
 
 export function getStoredUser() {
-  // 1. Check tab-scoped sessionStorage first (used by Faculty and Admin)
   const sessionUser = sessionStorage.getItem('rgmcet_auth_user');
   if (sessionUser) {
     try {
@@ -34,39 +15,16 @@ export function getStoredUser() {
       return null;
     }
   }
-
-  // 2. Check localStorage (permitted ONLY for student accounts)
-  const localUserStr = localStorage.getItem('rgmcet_auth_user');
-  if (localUserStr) {
-    try {
-      const localUser = JSON.parse(localUserStr);
-      if (localUser && localUser.role === 'student') {
-        return localUser;
-      }
-    } catch (e) {}
-    // Purge any lingering faculty or admin account from localStorage
-    localStorage.removeItem('rgmcet_auth_token');
-    localStorage.removeItem('rgmcet_auth_user');
-  }
-
   return null;
 }
 
 export function setStoredSession(token, user) {
-  if (user?.role === 'faculty' || user?.role === 'admin') {
-    // Tab-scoped storage: sessionStorage only
-    if (token) sessionStorage.setItem('rgmcet_auth_token', token);
-    if (user) sessionStorage.setItem('rgmcet_auth_user', JSON.stringify(user));
-    // Ensure not persisted in localStorage
-    localStorage.removeItem('rgmcet_auth_token');
-    localStorage.removeItem('rgmcet_auth_user');
-  } else {
-    // Students retain persistent localStorage
-    if (token) localStorage.setItem('rgmcet_auth_token', token);
-    if (user) localStorage.setItem('rgmcet_auth_user', JSON.stringify(user));
-    sessionStorage.removeItem('rgmcet_auth_token');
-    sessionStorage.removeItem('rgmcet_auth_user');
-  }
+  if (token) sessionStorage.setItem('rgmcet_auth_token', token);
+  if (user) sessionStorage.setItem('rgmcet_auth_user', JSON.stringify(user));
+
+  // Purge any legacy localStorage keys to enforce strict session hygiene
+  localStorage.removeItem('rgmcet_auth_token');
+  localStorage.removeItem('rgmcet_auth_user');
 }
 
 export function clearStoredSession() {
@@ -99,15 +57,19 @@ export async function apiRequest(endpoint, options = {}) {
   }
 
   if (!response.ok) {
-    throw new Error(data.error || data.message || `HTTP ${response.status} error`);
+    const errorMsg = data.error || data.message || `Request failed with status ${response.status}`;
+    const err = new Error(errorMsg);
+    err.status = response.status;
+    err.data = data;
+    throw err;
   }
 
   return data;
 }
 
-// Auth endpoints
+// Authentication endpoints
 export const authApi = {
-  login: (register_id, password, expected_role) =>
+  login: (register_id, password, expected_role) => 
     apiRequest('/auth/login', {
       method: 'POST',
       body: { register_id, password, expected_role }
@@ -122,61 +84,63 @@ export const authApi = {
       method: 'POST',
       body: payload
     }),
-  requestOtp: (phone, role) =>
-    apiRequest('/auth/forgot-password/request-otp', {
-      method: 'POST',
-      body: { phone, role }
-    }),
-  verifyOtp: (phone, otp, role) =>
-    apiRequest('/auth/forgot-password/verify-otp', {
-      method: 'POST',
-      body: { phone, otp, role }
-    }),
-  resetPasswordWithOtp: (reset_token, new_password, confirm_password) =>
-    apiRequest('/auth/forgot-password/reset-password', {
-      method: 'POST',
-      body: { reset_token, new_password, confirm_password }
-    }),
-  changePassword: (current_password, new_password, confirm_password) =>
+  changePassword: (payload) =>
     apiRequest('/auth/change-password', {
       method: 'POST',
-      body: { current_password, new_password, confirm_password }
+      body: payload
     }),
-  getMe: () => apiRequest('/auth/me'),
   logout: () => {
     const user = getStoredUser();
     return apiRequest('/auth/logout', {
       method: 'POST',
       body: { session_id: user?.session_id }
-    }).catch(() => {});
+    });
   },
   sendHeartbeat: () =>
     apiRequest('/auth/session/heartbeat', {
       method: 'POST'
     }),
   sendUnload: () => {
-    const user = getStoredUser();
     const token = getStoredToken();
-    if (!user || (user.role !== 'faculty' && user.role !== 'admin')) return;
-    const payload = JSON.stringify({ session_id: user.session_id });
-    if (navigator.sendBeacon) {
-      const blob = new Blob([payload], { type: 'application/json' });
-      navigator.sendBeacon(`${API_BASE}/auth/session/unload`, blob);
-    } else {
-      fetch(`${API_BASE}/auth/session/unload`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-        },
-        body: payload,
-        keepalive: true
-      }).catch(() => {});
-    }
-  }
+    const user = getStoredUser();
+    if (!token && !user) return;
+    try {
+      const payload = JSON.stringify({ session_id: user?.session_id });
+      if (navigator.sendBeacon) {
+        const blob = new Blob([payload], { type: 'application/json' });
+        navigator.sendBeacon(`${API_BASE}/auth/session/unload`, blob);
+      } else {
+        fetch(`${API_BASE}/auth/session/unload`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+          },
+          body: payload,
+          keepalive: true
+        }).catch(() => {});
+      }
+    } catch (e) {}
+  },
+  requestOtp: (phone, role) =>
+    apiRequest('/auth/forgot-password/request-otp', {
+      method: 'POST',
+      body: { phone, role }
+    }),
+  verifyOtp: (payload) =>
+    apiRequest('/auth/forgot-password/verify-otp', {
+      method: 'POST',
+      body: payload
+    }),
+  resetPasswordWithToken: (payload) =>
+    apiRequest('/auth/forgot-password/reset-password', {
+      method: 'POST',
+      body: payload
+    }),
+  getMe: () => apiRequest('/auth/me')
 };
 
-// Timetable endpoints
+// Timetable endpoints (Public read-only)
 export const timetableApi = {
   getTimetable: (year, section_id, date) => {
     let url = `/timetables?year=${year}`;
@@ -189,10 +153,10 @@ export const timetableApi = {
     if (year) url += `?year=${year}`;
     return apiRequest(url);
   },
-  addSection: (year, name) =>
+  addSection: (payload) =>
     apiRequest('/timetables/sections', {
       method: 'POST',
-      body: { year, name }
+      body: payload
     }),
   deleteSection: (id) =>
     apiRequest(`/timetables/sections/${id}`, {
@@ -226,30 +190,55 @@ export const timetableApi = {
   getVersion: () => apiRequest('/timetables/version')
 };
 
-// Real-time EventSource subscriber for timetable updates
-// Uses secure single-use ticket pattern to avoid leaking permanent JWT in URLs
+// Real-time EventSource subscriber for timetable updates (Public, with polling fallback)
 export function subscribeToTimetableEvents(onEvent, onError) {
-  const token = getStoredToken();
-  if (!token) return () => {};
-
   let eventSource = null;
   let isClosed = false;
   let reconnectTimeout = null;
+  let pollingInterval = null;
+  let lastKnownVersion = null;
 
-  async function connect() {
+  function startPollingFallback() {
+    if (pollingInterval || isClosed) return;
+    pollingInterval = setInterval(async () => {
+      try {
+        const data = await timetableApi.getVersion();
+        if (data?.version) {
+          if (lastKnownVersion && data.version !== lastKnownVersion) {
+            window.dispatchEvent(new CustomEvent('rgmcet_timetable_updated', { detail: data }));
+            window.dispatchEvent(new CustomEvent('rgmcet_notifications_updated'));
+            if (onEvent) onEvent(data);
+          }
+          lastKnownVersion = data.version;
+        }
+      } catch (err) {}
+    }, 15000);
+  }
+
+  function stopPollingFallback() {
+    if (pollingInterval) {
+      clearInterval(pollingInterval);
+      pollingInterval = null;
+    }
+  }
+
+  function connect() {
     if (isClosed) return;
     try {
-      // 1. Request short-lived single-use SSE ticket
-      const ticketRes = await apiRequest('/timetables/events/ticket', { method: 'POST' });
-      if (!ticketRes || !ticketRes.ticket || isClosed) return;
-
-      const url = `${API_BASE}/timetables/events?ticket=${encodeURIComponent(ticketRes.ticket)}`;
+      const url = `${API_BASE}/timetables/events`;
       eventSource = new EventSource(url);
+
+      eventSource.onopen = () => {
+        stopPollingFallback();
+      };
 
       eventSource.onmessage = (e) => {
         try {
           const data = JSON.parse(e.data);
-          if (data && data.type === 'timetable_updated') {
+          if (data && data.version) {
+            lastKnownVersion = data.version;
+          }
+          if (data && (data.type === 'timetable_updated' || data.type === 'notification_created')) {
             window.dispatchEvent(new CustomEvent('rgmcet_timetable_updated', { detail: data }));
             window.dispatchEvent(new CustomEvent('rgmcet_notifications_updated'));
             if (onEvent) onEvent(data);
@@ -262,15 +251,17 @@ export function subscribeToTimetableEvents(onEvent, onError) {
           eventSource.close();
           eventSource = null;
         }
+        startPollingFallback();
         if (onError) onError(err);
         if (!isClosed) {
-          reconnectTimeout = setTimeout(connect, 3000);
+          reconnectTimeout = setTimeout(connect, 5000);
         }
       };
     } catch (err) {
+      startPollingFallback();
       if (onError) onError(err);
       if (!isClosed) {
-        reconnectTimeout = setTimeout(connect, 3000);
+        reconnectTimeout = setTimeout(connect, 5000);
       }
     }
   }
@@ -280,6 +271,7 @@ export function subscribeToTimetableEvents(onEvent, onError) {
   return () => {
     isClosed = true;
     if (reconnectTimeout) clearTimeout(reconnectTimeout);
+    stopPollingFallback();
     if (eventSource) {
       eventSource.close();
       eventSource = null;
@@ -287,7 +279,7 @@ export function subscribeToTimetableEvents(onEvent, onError) {
   };
 }
 
-// Faculty endpoints
+// Faculty endpoints (Public read-only availability, protected mutations)
 export const facultyApi = {
   getAvailability: (day, search, date) => {
     let url = '/faculty/availability';
@@ -313,7 +305,7 @@ export const facultyApi = {
   }
 };
 
-// Faculty Leave endpoints
+// Faculty Leave endpoints (Public read-only leaves, protected mutations)
 export const leaveApi = {
   getLeaves: (date, faculty_id) => {
     let url = '/faculty/leaves';
@@ -334,23 +326,19 @@ export const leaveApi = {
     })
 };
 
-// Global Notifications (Faculty Leave Intimations)
+// Global Notifications (Faculty Leave Intimations - Public read-only, admin delete)
 export const notificationApi = {
-  getNotifications: () => apiRequest('/notifications'),
+  getNotifications: (date) => {
+    let url = '/notifications';
+    if (date) url += `?date=${encodeURIComponent(date)}`;
+    return apiRequest(url);
+  },
   clearNotifications: () => apiRequest('/notifications/clear', { method: 'POST' }),
   dismissNotification: (id) => apiRequest(`/notifications/${id}`, { method: 'DELETE' })
 };
 
 // Directory endpoints (Protected: Faculty & Admin only)
 export const directoryApi = {
-  getStudents: (year, search) => {
-    let url = '/directory/students';
-    const params = [];
-    if (year) params.push(`year=${year}`);
-    if (search) params.push(`search=${encodeURIComponent(search)}`);
-    if (params.length) url += `?${params.join('&')}`;
-    return apiRequest(url);
-  },
   getFaculty: (search, date) => {
     let url = '/directory/faculty';
     const params = [];
@@ -368,11 +356,6 @@ export const directoryApi = {
   deleteUser: (id) =>
     apiRequest(`/directory/users/${id}`, {
       method: 'DELETE'
-    }),
-  resetStudentPassword: (studentId, newPassword) =>
-    apiRequest(`/directory/students/${studentId}/reset-password`, {
-      method: 'POST',
-      body: { new_password: newPassword }
     }),
   getAuditLogs: () => apiRequest('/directory/audit-logs')
 };

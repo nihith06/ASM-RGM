@@ -648,7 +648,7 @@ function SlotBadge({ slot }) {
   if (slot.status === 'free') {
     return (
       <div 
-        title={slot.period === 7 ? "Available until 5:00 PM" : "Available for student queries & consultations"}
+        title={slot.period === 7 ? "Available until 5:00 PM" : "Available for queries & consultations"}
         className="w-full py-2 px-1 rounded-lg bg-emerald-50 text-emerald-800 border border-emerald-200/80 flex flex-col items-center justify-center font-bold text-[10px]"
       >
         <span>Available</span>

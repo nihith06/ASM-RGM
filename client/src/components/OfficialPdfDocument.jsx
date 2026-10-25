@@ -166,7 +166,7 @@ export default function OfficialPdfDocument({
   };
 
   // Compile faculty details table (unique subjects with assigned faculty & phone)
-  const isStudent = user?.role === 'student';
+  const isStaff = Boolean(user && (user.role === 'faculty' || user.role === 'admin'));
   const displayFacultyList = facultyDetails.length > 0 ? facultyDetails : [];
 
   return (
@@ -175,7 +175,7 @@ export default function OfficialPdfDocument({
       style={{ display: 'none', width: '1120px', backgroundColor: '#ffffff', color: '#000000', padding: '24px' }}
       className="font-sans"
     >
-      {/* 1. Header (Centered, replicates 1000131124.png) */}
+      {/* 1. Header (Centered, replicates official format) */}
       <div className="text-center border-b-2 border-slate-900 pb-3 mb-4">
         <div className="text-[13px] font-bold tracking-wider text-slate-800 uppercase">
           (AUTONOMOUS)
@@ -430,7 +430,7 @@ export default function OfficialPdfDocument({
                 <th className="border border-slate-800 py-1 px-3 w-1/3">Subject Name</th>
                 <th className="border border-slate-800 py-1 px-3 w-1/3">Faculty Name</th>
                 <th className="border border-slate-800 py-1 px-3">
-                  Phone No. {isStudent && <span className="text-[9px] font-normal text-slate-500">(Protected)</span>}
+                  Phone No. {!isStaff && <span className="text-[9px] font-normal text-slate-500">(Protected)</span>}
                 </th>
               </tr>
             </thead>
@@ -447,7 +447,7 @@ export default function OfficialPdfDocument({
                     {item.faculty_name}
                   </td>
                   <td className="border border-slate-800 py-1 px-3 font-mono text-slate-700">
-                    {isStudent ? '—' : (item.phone || '—')}
+                    {!isStaff ? '—' : (item.phone || '—')}
                   </td>
                 </tr>
               ))}

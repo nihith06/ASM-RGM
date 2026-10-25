@@ -3,10 +3,8 @@ import {
   GraduationCap, 
   Calendar, 
   Clock, 
-  Sparkles, 
   BookOpen, 
-  ShieldCheck,
-  CheckCircle2
+  ShieldCheck
 } from 'lucide-react';
 import TimetableGrid from '../components/TimetableGrid';
 import FacultyAvailabilityView from '../components/FacultyAvailabilityView';

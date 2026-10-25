@@ -3,13 +3,7 @@ import {
   GraduationCap, 
   BookOpenCheck, 
   ShieldCheck, 
-  ArrowRight, 
-  Calendar, 
-  Clock, 
-  CheckCircle2, 
-  Sparkles,
-  FileSpreadsheet,
-  Users
+  ArrowRight
 } from 'lucide-react';
 
 export default function LandingPage({ onSelectRole }) {

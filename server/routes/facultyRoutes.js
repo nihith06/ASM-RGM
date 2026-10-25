@@ -1,7 +1,7 @@
 import express from 'express';
 import db from '../db.js';
 import { authenticateToken } from '../auth.js';
-import { getSlotTimeRange, SENIOR_YEAR_SLOTS, YEAR_1_SLOTS, PERIOD_LABELS, formatDateHuman, getKolkataDate } from '../timeUtils.js';
+import { getSlotTimeRange, SENIOR_YEAR_SLOTS, PERIOD_LABELS, formatDateHuman, getKolkataDate } from '../timeUtils.js';
 import { broadcastTimetableUpdate } from '../services/realtimeService.js';
 
 const router = express.Router();

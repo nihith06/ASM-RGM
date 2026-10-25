@@ -1,4 +1,4 @@
-import db, { OFFICIAL_FACULTY, OFFICIAL_SECTIONS, isHodFaculty } from '../db.js';
+import db, { isHodFaculty } from '../db.js';
 
 export const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 

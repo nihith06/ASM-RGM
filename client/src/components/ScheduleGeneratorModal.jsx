@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { 
   X, Sparkles, Play, CheckCircle2, AlertTriangle, 
-  Clock, ShieldAlert, Users, Layers, ArrowRight, Loader2 
+  Clock, ShieldAlert, Users, Layers, Loader2 
 } from 'lucide-react';
 import { timetableApi } from '../api';
 

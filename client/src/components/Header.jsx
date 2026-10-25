@@ -1,11 +1,8 @@
 import React from 'react';
 import { 
   GraduationCap, 
-  Calendar, 
-  Users, 
   ShieldCheck, 
   LogOut, 
-  Sparkles,
   BookOpenCheck,
   KeyRound
 } from 'lucide-react';

@@ -10,8 +10,6 @@ process.env.NODE_ENV = 'test';
 process.env.DB_PATH = process.env.DB_PATH || path.join(__dirname, 'data', 'temp-test.db');
 
 const { default: db, populateTimetablesData } = await import('./db.js');
-const { getLastDispatchedOtp } = await import('./services/smsService.js');
-
 const BASE_URL = 'http://localhost:5000';
 
 async function request(path, options = {}) {

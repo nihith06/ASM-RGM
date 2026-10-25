@@ -6,7 +6,6 @@ import ChangePasswordModal from './components/ChangePasswordModal';
 import StudentDashboard from './pages/StudentDashboard';
 import FacultyDashboard from './pages/FacultyDashboard';
 import AdminDashboard from './pages/AdminDashboard';
-import TimetableGrid from './components/TimetableGrid';
 import DirectoryView from './components/DirectoryView';
 import { 
   getStoredToken, 

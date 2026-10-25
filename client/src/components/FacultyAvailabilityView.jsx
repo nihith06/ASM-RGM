@@ -2,17 +2,12 @@ import React, { useState, useEffect } from 'react';
 import { 
   Clock, 
   Search, 
-  Filter, 
   User, 
   CheckCircle, 
-  BookOpen, 
-  Calendar, 
-  HelpCircle, 
   Sparkles, 
   Edit2, 
-  ChevronRight,
-  X,
-  AlertCircle,
+  X, 
+  AlertCircle, 
   Check
 } from 'lucide-react';
 import { facultyApi } from '../api';

@@ -5,12 +5,10 @@ import {
   Clock, 
   Users, 
   Edit3, 
-  Sparkles, 
   Check, 
   X, 
   AlertCircle,
   Plus,
-  Trash2,
   BookOpen,
 } from 'lucide-react';
 import { facultyApi, leaveApi } from '../api';

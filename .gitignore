@@ -20,6 +20,10 @@ npm-debug.log*
 server/data/temp-test*
 server/data/backup-pre-hardening.db
 *.db-journal
+*.db-shm
+*.db-wal
+server/data/*.db-shm
+server/data/*.db-wal
 
 # OS & Editor
 .DS_Store

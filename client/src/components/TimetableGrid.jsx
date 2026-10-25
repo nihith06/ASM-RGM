@@ -1,21 +1,17 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
   Calendar, 
-  Clock, 
-  Layers, 
   Plus, 
   Edit3, 
   Printer, 
   Download, 
   Check, 
   X, 
-  AlertCircle,
-  BookOpen,
-  User,
-  Trash2,
-  Loader2,
-  Upload,
-  FileText
+  AlertCircle, 
+  User, 
+  Trash2, 
+  Loader2, 
+  Upload
 } from 'lucide-react';
 import { timetableApi, directoryApi } from '../api';
 import OfficialPdfDocument, { exportToOfficialPdf } from './OfficialPdfDocument';

@@ -1,16 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { 
-  Users, 
   UserCheck, 
-  GraduationCap, 
   Search, 
   Phone, 
-  ShieldAlert, 
-  BookOpen, 
-  Calendar, 
-  Mail,
   Lock,
-  Download,
   Key,
   CheckCircle2,
   AlertCircle,

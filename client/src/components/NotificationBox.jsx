@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Bell, Calendar, User, Clock, Check, AlertCircle, ShieldAlert, X } from 'lucide-react';
+import { Bell, Calendar, User, Clock, AlertCircle, X } from 'lucide-react';
 import { notificationApi } from '../api';
 
 export default function NotificationBox({ user }) {
